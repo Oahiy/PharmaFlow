@@ -1,0 +1,41 @@
+[project]
+name = "pharmaflow"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "docker",
+    "fastapi",
+    "fastembed",
+    "fastmcp",
+    "httpx",
+    "langchain-mcp-adapters",
+    "langchain-openai",
+    "langfuse",
+    "langgraph",
+    "langgraph-checkpoint-postgres",
+    "matplotlib",
+    "mcp",
+    "pandas",
+    "psycopg[binary,pool]",
+    "pydantic",
+    "python-multipart",
+    "pyyaml",
+    "qdrant-client",
+    "rdkit",
+    "streamlit",
+    "uvicorn",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"

@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# 测试与检查产物
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+/coverage.xml
+/htmlcov/
+
+# 密钥和本地配置
+.env
+.env.*
+!.env.example
+
+# 运行时数据（录制的 HTTP 响应和 data/candidates.csv 要提交）
+data/uploads/
+
+# 模型缓存
+.cache/
+
+# 本地编辑器文件
+/.idea/
+/.vscode/
+*.swp
+*.swo
+
+# 日志和系统文件
+*.log
+.DS_Store
+._*
