@@ -6,7 +6,7 @@ dependencies = [
     "docker",
     "fastapi",
     "fastembed",
-    "fastmcp",
+    "fastmcp<4",
     "httpx",
     "langchain-mcp-adapters",
     "langchain-openai",
@@ -14,7 +14,7 @@ dependencies = [
     "langgraph",
     "langgraph-checkpoint-postgres",
     "matplotlib",
-    "mcp",
+    "mcp<2",
     "pandas",
     "psycopg[binary,pool]",
     "pydantic",
@@ -35,7 +35,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 target-version = "py312"

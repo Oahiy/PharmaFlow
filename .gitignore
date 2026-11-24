@@ -14,6 +14,9 @@ dist/
 /coverage.xml
 /htmlcov/
 
+# 开发计划的本地 HTML 预览
+/docs/plan.html
+
 # 密钥和本地配置
 .env
 .env.*
