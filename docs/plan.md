@@ -118,7 +118,7 @@ pharmaflow/
 - **长期记忆存筛选模板**：sotorasib（MW≈561）和 adagrasib（MW≈604）都超过 Lipinski 的 MW≤500，筛选阈值需要按靶点调整。人工确认过的“靶点 → 检索词、筛选阈值”存进 `AsyncPostgresStore`，下次会话按靶点精确召回。Store 不配置 `index`（语义检索），所以不需要 pgvector，用官方 `postgres:16` 镜像即可。
 - **检查点开启严格反序列化**：检查点反序列化默认允许任意 Python 类型，能写库的人就可能借此执行代码。设置 `LANGGRAPH_STRICT_MSGPACK=true` 后，LangGraph 编译图时会从 State、节点和通道的类型标注里收集类型，自动加进白名单，子图也一样。所以 State 字段要标注具体类型（如 `list[AEEvidence]`），不要把自定义对象放进 `Any` 或 `dict` 字段；实在要放，就手动加进 `allowed_msgpack_modules`。
 - **Langfuse 用云版**：自托管需要 web、worker、Postgres、Redis、ClickHouse、MinIO 六个容器。Cloud 免费档每月 5 万计费单位，每个 trace、span、评分各算一个，本计划的评测规模用不完。
-- **评测可复现**：PubMed 等接口的返回会随时间变化。工具层加 HTTP 录制回放，评测一律用回放数据，temperature 设为 0（DeepSeek 关闭 thinking 后才生效）。每次评测用新的 `user_id` 命名空间，避免开发时存下的模板影响结果。
+- **评测可复现**：用 HTTP 录制回放固定 PubMed 等外部接口的数据。固定模型配置，将 `temperature` 设为 0 以减少采样波动，DeepSeek 调用关闭 thinking。规则按解析后的字段判分，开放式答案由 LLM-as-judge 按评分细则判分。模型输出和 judge 分数仍可能波动。每次评测用新的 `user_id` 命名空间，避免开发时存下的模板影响结果。
 - **评测结果存进 Postgres**：评测的运行、用例和结果存进 `eval` schema 下自己设计的三张表，用 psycopg 手写 SQL，不用 ORM。配置对比、失败分布和回归用例清单都由 SQL 生成，每条结果带 Langfuse 的 trace_id。Langfuse 用来看单条 trace，数据库用来做跨运行的统计和对比。
 - **沙盒和部署的取舍**：api 放进容器后，要启动沙盒容器就得挂载 `/var/run/docker.sock`，相当于把宿主机 Docker 的 root 权限交给 api。本项目只在本地演示时这样做，README 写明风险和生产替代方案（gVisor、Firecracker，或 E2B 这类托管沙盒）。
 
@@ -181,8 +181,8 @@ pharmaflow/
 ### Task 3：单 Agent ReAct 基线 + Postgres 持久化（7.5 小时）
 - **目标**：一个能调用两个 MCP Server、支持多轮和续聊的 Agent，会话状态存在 Postgres，之后作为评测基线。
 - **做法**：
-  - 先写兼容性脚本 `scripts/check_model.py`，对选定的模型验证：强制 `tool_choice` 能用、结构化输出能解析、`temperature=0` 生效（同一请求重复几次，输出基本一致）、多轮工具调用不报错。换模型时重跑。如果关闭 thinking 后强制 `tool_choice` 仍被拒绝，结构化输出改用 JSON 输出模式（`response_format={"type": "json_object"}`），再用 Pydantic 校验，失败就重试。
-  - 写 OpenAI 兼容客户端，通过 `base_url` 和 `model` 切换 DeepSeek 或 Qwen，配置超时和重试。DeepSeek 默认带上 `extra_body={"thinking": {"type": "disabled"}}`。
+  - 先写兼容性脚本 `scripts/check_model.py`，验证强制 `tool_choice`、结构化输出解析、`temperature=0` 下短回答的稳定性和多轮工具调用。高温采样的分布只作诊断参考。换模型时重跑。如果关闭 thinking 后强制 `tool_choice` 仍被拒绝，结构化输出改用 JSON 输出模式（`response_format={"type": "json_object"}`），再用 Pydantic 校验，失败就重试。
+  - 写 OpenAI 兼容客户端，通过 `base_url` 和 `model` 切换 DeepSeek 或 Qwen，配置超时和重试。DeepSeek 始终带上 `extra_body={"thinking": {"type": "disabled"}}`。在 `.env.example` 提供 `LLM_DISABLE_THINKING`，设为 `true` 时也发送该字段，适用于接受 DeepSeek thinking 参数格式的端点。
   - 用 `MultiServerMCPClient` 连接两个 MCP Server。启动时用 `client.session()` 为每个 Server 开一个长期会话，再用 `load_mcp_tools(session)` 加载工具。不用 `get_tools()` 的默认行为，它每次调用工具都新开会话，stdio 下等于每次重启子进程。stdio 子进程默认只继承少量环境变量，回放模式、录制目录和 NCBI API key 要在 `env` 里显式传。
   - 手写 StateGraph，包含 agent 节点、ToolNode、条件边和最大步数。
   - 建 `docker-compose.yml`，先只放 `postgres:16`（配数据卷）。Task 7 加 qdrant，Task 13 再补应用服务。
@@ -210,7 +210,7 @@ pharmaflow/
 - **做法**：
   - 接入 Langfuse Cloud 的 LangChain CallbackHandler。session 对应 `thread_id`，用 tag 标记版本和 git commit。
   - 每条评测用 YAML 描述，包括输入、期望工具、参数约束和检查规则（关键字段、数值范围）。开放式回答用 LLM-as-judge，配评分细则。
-  - 先写 12 条：单工具 6 条、多跳 3 条、异常 3 条。工具一律走 replay，temperature 设为 0，每条用例用新的 `thread_id`。
+  - 先写 12 条：单工具 6 条、多跳 3 条、异常 3 条。用同一配置跑两轮基线，记录汇总指标和逐用例结果的差异。工具一律走 replay，temperature 设为 0，每条用例用新的 `thread_id`。
   - 评测运行器用 stdio 拉起自己的 MCP 子进程，并显式传回放配置，不连 compose 里的服务。
   - 评测结果写进 Postgres 的 `eval` schema。三张表自己设计，建表 SQL 放在 `eval/schema.sql`，用 psycopg 手写 SQL，不用 ORM：
     - `eval.runs`：运行 ID、tag、git commit、配置（JSONB）、开始和结束时间。
