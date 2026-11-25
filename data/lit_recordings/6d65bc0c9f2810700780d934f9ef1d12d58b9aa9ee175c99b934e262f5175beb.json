@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmax=5&retmode=json&sort=relevance&term=%22KRAS+G12C%22%5BTitle%2FAbstract%5D",
+  "status_code": 200,
+  "content_type": "application/json; charset=UTF-8",
+  "body": "{\"header\":{\"type\":\"esearch\",\"version\":\"0.3\"},\"esearchresult\":{\"count\":\"1677\",\"retmax\":\"5\",\"retstart\":\"0\",\"idlist\":[\"31666701\",\"38072173\",\"32430388\",\"37782744\",\"37956237\"],\"translationset\":[],\"querytranslation\":\"\\\"KRAS G12C\\\"[Title/Abstract]\"}}\n"
+}

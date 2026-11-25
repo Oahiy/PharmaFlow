@@ -1,10 +1,13 @@
 import asyncio
+import os
 import sys
 from pathlib import Path
 
 import pytest
+from fastmcp import Client
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
+from mcp_servers.chem import tools as chem_tools
 from mcp_servers.chem.models import (
     DruglikeMolecule,
     DruglikeResult,
@@ -12,6 +15,7 @@ from mcp_servers.chem.models import (
     MoleculeProperties,
     PropertiesResult,
 )
+from mcp_servers.chem.server import mcp
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -24,7 +28,11 @@ async def test_chem_tools_over_one_stdio_session(tmp_path):
                 "command": sys.executable,
                 "args": ["-m", "mcp_servers.chem.server"],
                 "cwd": str(tmp_path),
-                "env": {"PYTHONPATH": str(PROJECT_ROOT)},
+                "env": {
+                    "PYTHONPATH": str(PROJECT_ROOT),
+                    "FASTMCP_ENV_FILE": os.devnull,
+                    "PYTHONDONTWRITEBYTECODE": "1",
+                },
             }
         }
     )
@@ -80,14 +88,7 @@ async def test_chem_tools_over_one_stdio_session(tmp_path):
 async def test_csv_read_error_reaches_mcp_client(
     tmp_path, monkeypatch, csv_bytes, reason
 ):
-    # FastMCP loads settings on import, so run it in the isolated test directory.
-    monkeypatch.chdir(tmp_path)
-    from fastmcp import Client
-
-    from mcp_servers.chem import tools
-    from mcp_servers.chem.server import mcp
-
-    monkeypatch.setattr(tools, "_DATA_DIR", tmp_path)
+    monkeypatch.setattr(chem_tools, "_DATA_DIR", tmp_path)
     (tmp_path / "broken.csv").write_bytes(csv_bytes)
     async with Client(mcp) as client:
         result = await client.call_tool(

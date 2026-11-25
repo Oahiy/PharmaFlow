@@ -1,0 +1,7 @@
+{
+  "method": "GET",
+  "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmax=5&retmode=json&sort=relevance&term=%22pharmaflowtask2nomatchxq9z%22%5BTitle%2FAbstract%5D",
+  "status_code": 200,
+  "content_type": "application/json; charset=UTF-8",
+  "body": "{\"header\":{\"type\":\"esearch\",\"version\":\"0.3\"},\"esearchresult\":{\"count\":\"0\",\"retmax\":\"0\",\"retstart\":\"0\",\"idlist\":[],\"translationset\":[],\"querytranslation\":\"\\\"pharmaflowtask2nomatchxq9z\\\"[Title/Abstract]\",\"warninglist\":{\"phrasesignored\":[],\"quotedphrasesnotfound\":[\"\\\"pharmaflowtask2nomatchxq9z\\\"[Title/Abstract]\"],\"outputmessages\":[\"No items found.\"]}}}\n"
+}
