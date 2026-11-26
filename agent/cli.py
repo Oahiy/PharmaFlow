@@ -11,9 +11,8 @@ async def chat(settings: AgentSettings, thread_id: str, max_steps: int) -> None:
     # LangGraph reads LANGGRAPH_STRICT_MSGPACK at import time.
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
     from langchain_core.runnables import RunnableConfig
-    from langgraph.graph import START
 
-    from .graph import STEP_LIMIT_MESSAGE, build_graph
+    from .graph import STEP_LIMIT_MESSAGE, build_graph, resume_config
     from .llm import create_llm
     from .mcp_client import open_mcp_tools
     from .persistence import open_connection_pool, setup_checkpointer
@@ -41,13 +40,9 @@ async def chat(settings: AgentSettings, thread_id: str, max_steps: int) -> None:
             snapshot = await graph.aget_state(thread_config)
             if snapshot.next:
                 print("正在从检查点恢复上一轮对话。")
-                resume_config = thread_config.copy()
-                # An input checkpoint can precede the write to max_steps.
-                if snapshot.next != (START,):
-                    resume_config["recursion_limit"] = (
-                        2 * snapshot.values["max_steps"] + 1
-                    )
-                print_reply(await graph.ainvoke(None, resume_config))
+                print_reply(
+                    await graph.ainvoke(None, resume_config(thread_config, snapshot))
+                )
 
             while True:
                 try:

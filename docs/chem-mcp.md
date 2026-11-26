@@ -21,7 +21,7 @@ npx --yes @modelcontextprotocol/inspector@2.16.0 --cli \
   --tool-args-json '{"request":{"dataset_id":"candidates","thresholds":{"max_mw":600}}}' --format json
 ```
 
-两个工具也接受 `{"request":{"smiles":["CCO"]}}`。`dataset_id` 对应项目 `data/` 下的 CSV 文件名，去掉 `.csv` 后缀。CSV 使用 UTF-8 编码，列名必须唯一，且须包含 `smiles` 列。每条数据记录的字段数必须与表头一致。`molecule_chembl_id` 列可选。如果表头为 `smiles,molecule_chembl_id`，`CCC,` 表示 ID 为空，`CCC` 则缺少一个字段。两个工具均按输入顺序返回原始 SMILES 和 ChEMBL ID。直接传入 SMILES 列表、省略 ID 列或显式留空 ID 时，结果中的 `molecule_chembl_id` 为 `null`。
+两个工具也接受 `{"request":{"smiles":["CCO"]}}`。内置数据集 ID 对应项目 `data/` 下的 CSV 文件名，去掉 `.csv` 后缀。上传接口返回的 ID 带 `upload_` 前缀，chem-mcp 从 `UPLOAD_DIR/<dataset_id>.csv` 读取，默认目录是 `data/uploads/`。CSV 使用 UTF-8 编码，列名必须唯一，且须包含 `smiles` 列。每条数据记录的字段数必须与表头一致。`molecule_chembl_id` 列可选。如果表头为 `smiles,molecule_chembl_id`，`CCC,` 表示 ID 为空，`CCC` 则缺少一个字段。两个工具均按输入顺序返回原始 SMILES 和 ChEMBL ID。直接传入 SMILES 列表、省略 ID 列或显式留空 ID 时，结果中的 `molecule_chembl_id` 为 `null`。
 
 字段数不符时，工具停止处理该数据集，报告数据集 ID、CSV 行号和缺失列名或多余字段数。例如在 `name,smiles` 表头下，名称中带逗号应写为 `"batch,C",CCO`。写成 `batch,C,CCO` 会触发行宽错误。字段齐全但 SMILES 为空或非法时，仅该行返回 `invalid_smiles`，同批其他行继续计算。未知数据集返回 `Unknown dataset ID: <id>`。编码和 CSV 解析错误保留原始原因。
 

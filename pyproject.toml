@@ -8,6 +8,7 @@ dependencies = [
     "fastembed",
     "fastmcp<4",
     "httpx",
+    "httpx-sse>=0.4.3",
     "langchain-core>=1.8.4",
     "langchain-mcp-adapters",
     "langchain-openai",
@@ -26,7 +27,7 @@ dependencies = [
     "qdrant-client",
     "rdkit",
     "streamlit",
-    "uvicorn",
+    "uvicorn[standard]",
 ]
 
 [dependency-groups]

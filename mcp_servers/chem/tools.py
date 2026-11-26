@@ -1,15 +1,20 @@
 """Calculate RDKit molecular descriptors and screen for drug-likeness."""
 
 import csv
-from collections import Counter
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Literal
 
 from rdkit import Chem
 from rdkit.Chem import QED, Crippen, Descriptors, Lipinski, rdMolDescriptors
 from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
 
+from .datasets import (
+    PROJECT_ROOT,
+    UPLOAD_PREFIX,
+    dataset_path,
+    read_dataset_csv,
+    upload_directory,
+)
 from .models import (
     DruglikeInput,
     DruglikeMolecule,
@@ -22,49 +27,20 @@ from .models import (
     PropertiesResult,
 )
 
-_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+_DATA_DIR = PROJECT_ROOT / "data"
 _catalog_params = FilterCatalogParams()
 _catalog_params.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS)
 _PAINS_CATALOG = FilterCatalog(_catalog_params)
 
 
 def _load_dataset(dataset_id: str) -> list[MoleculeRecord]:
-    data_dir = _DATA_DIR.resolve()
-    path = (data_dir / f"{dataset_id}.csv").resolve()
-    if path.parent != data_dir:
-        raise ValueError(f"Dataset ID must resolve within data/: {dataset_id}")
-
+    directory = (
+        upload_directory() if dataset_id.startswith(UPLOAD_PREFIX) else _DATA_DIR
+    )
+    path = dataset_path(directory, dataset_id)
     try:
         with path.open(encoding="utf-8-sig", newline="") as source:
-            reader = csv.DictReader(source, strict=True)
-            fieldnames = reader.fieldnames
-            if not fieldnames or "smiles" not in fieldnames:
-                raise ValueError(
-                    f"Dataset must contain one smiles column: {dataset_id}"
-                )
-            for name, count in Counter(fieldnames).items():
-                if count > 1:
-                    raise ValueError(f"Dataset {dataset_id}: duplicate {name} column")
-
-            records = []
-            for row in reader:
-                if None in row:
-                    raise ValueError(
-                        f"Dataset {dataset_id}, line {reader.line_num}: "
-                        f"extra fields: {len(row[None])} (expected {len(fieldnames)} fields)"
-                    )
-                missing = [name for name, value in row.items() if value is None]
-                if missing:
-                    raise ValueError(
-                        f"Dataset {dataset_id}, line {reader.line_num}: "
-                        f"missing {', '.join(missing)} (expected {len(fieldnames)} fields)"
-                    )
-                records.append(
-                    MoleculeRecord(
-                        smiles=row["smiles"],
-                        molecule_chembl_id=row.get("molecule_chembl_id") or None,
-                    )
-                )
+            _, records = read_dataset_csv(source, dataset_id)
             return records
     except FileNotFoundError as exc:
         raise ValueError(f"Unknown dataset ID: {dataset_id}") from exc

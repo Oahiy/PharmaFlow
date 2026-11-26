@@ -3,17 +3,14 @@ import os
 import shutil
 from contextlib import asynccontextmanager
 from typing import TypedDict
-from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde import _msgpack
 from langgraph.graph import END, START, StateGraph
 from mcp.client import stdio
-from psycopg import Connection, OperationalError
 from pydantic import BaseModel
 
 from agent import cli, llm, mcp_client
@@ -24,24 +21,6 @@ from agent.persistence import open_connection_pool, setup_checkpointer
 from mcp_servers.chem.models import PropertiesResult
 from mcp_servers.lit.config import DEFAULT_RECORDINGS_DIR
 from mcp_servers.lit.models import TrialAdverseEventsResult
-
-COMPOSE_DATABASE_URL = "postgresql://pharmaflow:pharmaflow@127.0.0.1:5432/pharmaflow"
-
-
-@pytest.fixture(scope="session")
-def database_url() -> str:
-    url = os.getenv("DATABASE_URL", COMPOSE_DATABASE_URL)
-    try:
-        with Connection.connect(url, connect_timeout=5):
-            pass
-    except OperationalError as exc:
-        pytest.fail(f"无法连接集成测试所需的 PostgreSQL：{exc}", pytrace=False)
-    return url
-
-
-@pytest.fixture
-def run_config() -> RunnableConfig:
-    return {"configurable": {"thread_id": str(uuid4()), "user_id": str(uuid4())}}
 
 
 async def test_conversation_survives_new_pool_and_graph(

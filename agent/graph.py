@@ -10,7 +10,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
-from langgraph.types import Command
+from langgraph.types import Command, StateSnapshot
 
 from .state import AgentState
 
@@ -48,6 +48,17 @@ def _invalid_tool_results(reply: AIMessage) -> list[ToolMessage]:
             )
         )
     return results
+
+
+def resume_config(
+    thread_config: RunnableConfig, snapshot: StateSnapshot
+) -> RunnableConfig:
+    """Use the pending turn's original model-call budget when resuming it."""
+    config = thread_config.copy()
+    # The initial input checkpoint can precede the write to max_steps.
+    if snapshot.next != (START,):
+        config["recursion_limit"] = 2 * snapshot.values["max_steps"] + 1
+    return config
 
 
 def build_graph(

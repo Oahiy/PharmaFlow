@@ -1,8 +1,10 @@
 """Input and structured output models for chem-mcp."""
 
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, model_validator
+
+DatasetId = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")]
 
 
 class MoleculeInput(BaseModel):
@@ -13,10 +15,9 @@ class MoleculeInput(BaseModel):
     smiles: list[str] | None = Field(
         default=None, min_length=1, description="SMILES in the desired result order."
     )
-    dataset_id: str | None = Field(
+    dataset_id: DatasetId | None = Field(
         default=None,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
-        description="Name of a CSV in data/ without its extension, e.g. candidates.",
+        description="Dataset ID without .csv, e.g. candidates or an upload_ ID from the API.",
     )
 
     @model_validator(mode="after")

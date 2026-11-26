@@ -9,6 +9,8 @@ from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import load_mcp_tools
 
+from mcp_servers.chem.datasets import upload_directory
+
 from .config import PROJECT_ROOT
 
 
@@ -31,7 +33,7 @@ async def open_mcp_tools() -> AsyncIterator[list[BaseTool]]:
                 "command": sys.executable,
                 "args": ["-m", "mcp_servers.chem.server"],
                 "cwd": str(PROJECT_ROOT),
-                "env": stdio_env,
+                "env": {**stdio_env, "UPLOAD_DIR": str(upload_directory())},
             },
             "lit": {
                 "transport": "stdio",
