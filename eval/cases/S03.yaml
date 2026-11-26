@@ -1,0 +1,25 @@
+id: S03
+category: single_tool
+question: |
+  PubMed 检索式请原样使用 "KRAS G12C"[Title/Abstract]，最多返回 5 条。
+  请报告总命中数，并按工具返回顺序仅列出本次取得的 PMID。
+accepted_paths:
+  - - id: articles
+      tool: search_pubmed
+      request: {query: '"KRAS G12C"[Title/Abstract]', max_results: 5}
+checks:
+  - type: tool_matches
+    step: articles
+    value:
+      total_count: 1677
+      returned_count: 5
+      results:
+        - {pmid: '31666701'}
+        - {pmid: '38072173'}
+        - {pmid: '32430388'}
+        - {pmid: '37782744', title: Sotorasib}
+        - {pmid: '37956237', title: Adagrasib}
+  - {type: answer_number, pattern: '(?:总命中|总数|共计|共|total)[^\d\n]{0,16}(\d[\d,]*)', min: 1677, max: 1677}
+  - type: answer_sequence
+    pattern: '(?<!\d)\d{8}(?!\d)'
+    values: ['31666701', '38072173', '32430388', '37782744', '37956237']

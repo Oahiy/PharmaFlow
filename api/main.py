@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID, uuid4
 
@@ -10,7 +11,7 @@ from langgraph.constants import START
 from psycopg import AsyncConnection
 from starlette.concurrency import run_in_threadpool
 
-from agent.config import AgentSettings, load_environment
+from agent.config import AgentSettings, api_revision, load_environment
 
 from .schemas import (
     RunRequest,
@@ -19,7 +20,7 @@ from .schemas import (
     UploadedDataset,
     serialize_message,
 )
-from .streaming import RunResponse, stream_run
+from .streaming import RunResponse, TurnTracer, stream_run
 from .uploads import UploadSettings, receive_upload, save_upload
 
 if TYPE_CHECKING:
@@ -32,17 +33,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     load_environment()
     from agent.graph import build_graph
     from agent.llm import create_llm
-    from agent.mcp_client import open_mcp_tools
+    from agent.mcp_client import lit_env_from_process, open_mcp_tools
     from agent.persistence import open_connection_pool, setup_checkpointer
+    from agent.tracing import langfuse_turn_trace, open_langfuse
 
-    settings = AgentSettings.from_env()
-    app.state.database_url = settings.database_url
-    app.state.upload_settings = UploadSettings.from_env()
-    async with open_connection_pool(settings.database_url.get_secret_value()) as pool:
-        checkpointer = await setup_checkpointer(pool)
-        async with open_mcp_tools() as tools:
-            app.state.graph = build_graph(create_llm(settings.llm), tools, checkpointer)
-            yield
+    async with open_langfuse(required=False) as langfuse:
+        app.state.trace_for_thread = None
+        if langfuse is not None:
+            tags = [f"api-{app.version}"]
+            revision = await run_in_threadpool(api_revision)
+            if revision is not None:
+                tags.append(revision)
+            app.state.trace_for_thread = partial(langfuse_turn_trace, tags=tags)
+        settings = AgentSettings.from_env()
+        app.state.database_url = settings.database_url
+        app.state.upload_settings = UploadSettings.from_env()
+        async with open_connection_pool(
+            settings.database_url.get_secret_value()
+        ) as pool:
+            checkpointer = await setup_checkpointer(pool)
+            async with open_mcp_tools(lit_env=lit_env_from_process()) as tools:
+                app.state.graph = build_graph(
+                    create_llm(settings.llm), tools, checkpointer
+                )
+                yield
 
 
 app = FastAPI(title="PharmaFlow Agent", lifespan=lifespan)
@@ -55,6 +69,10 @@ def get_agent_graph(request: Request) -> "CompiledStateGraph":
 
 def get_upload_settings(request: Request) -> UploadSettings:
     return request.app.state.upload_settings
+
+
+def get_turn_tracer(request: Request) -> TurnTracer | None:
+    return request.app.state.trace_for_thread
 
 
 GraphDependency = Annotated["CompiledStateGraph", Depends(get_agent_graph)]
@@ -94,9 +112,14 @@ async def create_thread() -> ThreadCreated:
     dependencies=[Depends(claim_thread, scope="request")],
 )
 async def run_thread(
-    thread_id: UUID, request: RunRequest, graph: GraphDependency
+    thread_id: UUID,
+    request: RunRequest,
+    graph: GraphDependency,
+    trace_for_thread: Annotated[TurnTracer | None, Depends(get_turn_tracer)],
 ) -> RunResponse:
-    return RunResponse(stream_run(graph, thread_id, request))
+    return RunResponse(
+        stream_run(graph, thread_id, request, trace_for_thread=trace_for_thread)
+    )
 
 
 @router.get("/threads/{thread_id}")

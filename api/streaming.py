@@ -2,7 +2,7 @@
 
 import json
 import logging
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterator
 from contextlib import aclosing
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from agent.state import AgentState
 
 logger = logging.getLogger(__name__)
+type TurnTracer = Callable[[UUID], RunnableConfig]
 
 
 class RunResponse(StreamingResponse):
@@ -79,7 +80,11 @@ def tool_result(message: ToolMessage, name: str | None) -> ToolResult:
 
 
 async def stream_run(
-    graph: "CompiledStateGraph", thread_id: UUID, request: RunRequest
+    graph: "CompiledStateGraph",
+    thread_id: UUID,
+    request: RunRequest,
+    *,
+    trace_for_thread: TurnTracer | None,
 ) -> AsyncGenerator[str, None]:
     from agent.graph import resume_config
 
@@ -100,9 +105,12 @@ async def stream_run(
         snapshot = await graph.aget_state(thread_config)
         if snapshot.next:
             # The recovered reply belongs to the previous user message.
+            recovery_config = resume_config(thread_config, snapshot)
+            if trace_for_thread is not None:
+                recovery_config.update(trace_for_thread(thread_id))
             recovery = graph.astream_events(
                 None,
-                resume_config(thread_config, snapshot),
+                recovery_config,
                 version="v2",
                 include_types=["chain"],
             )
@@ -111,6 +119,8 @@ async def stream_run(
                     if event["event"] == "on_chain_start" and is_graph_node(event):
                         yield Node(node=event["name"], recovering=True).encode()
         emitted_results: set[str] = set()
+        if trace_for_thread is not None:
+            config.update(trace_for_thread(thread_id))
         events = graph.astream_events(turn, config, version="v2", stream_mode="values")
         async with aclosing(events):
             async for event in events:

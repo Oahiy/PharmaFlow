@@ -1,0 +1,12 @@
+id: S02
+category: single_tool
+question: 用默认 Lipinski 和 PAINS 条件筛选内置数据集 candidates。请分别报告总数和同时通过两项的数量，用「总数」和「通过」标明。
+accepted_paths:
+  - - id: screening
+      tool: filter_druglike
+      request: {dataset_id: candidates}
+checks:
+  - {type: tool_count, step: screening, path: results, count: 50}
+  - {type: tool_count, step: screening, path: results, where: {passes_filter: true}, count: 16}
+  - {type: answer_number, pattern: '(?:总数|总计|共计|total)[^\d\n]{0,16}(\d+)', min: 50, max: 50}
+  - {type: answer_number, pattern: '(?:通过|passed)[^\d\n]{0,24}(\d+)', min: 16, max: 16}

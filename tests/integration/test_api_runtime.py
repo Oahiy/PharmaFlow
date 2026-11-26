@@ -9,7 +9,7 @@ from langchain_core.tools import tool
 from pydantic import SecretStr
 
 from agent.graph import build_graph
-from agent.mcp_client import open_mcp_tools
+from agent.mcp_client import lit_env_from_process, open_mcp_tools
 from agent.persistence import open_connection_pool, setup_checkpointer
 from api.main import router
 from api.uploads import UploadSettings
@@ -49,6 +49,7 @@ async def test_workers_reject_overlapping_runs_and_release_lock_on_cancel(
             worker = FastAPI()
             worker.include_router(router)
             worker.state.database_url = SecretStr(database_url)
+            worker.state.trace_for_thread = None
             worker.state.graph = build_graph(
                 fake_chat_model(responses=replies),
                 [wait_for_result],
@@ -108,7 +109,7 @@ async def test_upload_readable_in_existing_stdio_session(tmp_path, monkeypatch):
     worker.state.upload_settings = UploadSettings.from_env()
     async with (
         asyncio.timeout(30),
-        open_mcp_tools() as tools,
+        open_mcp_tools(lit_env=lit_env_from_process()) as tools,
         httpx.AsyncClient(
             transport=httpx.ASGITransport(app=worker), base_url="http://test"
         ) as client,

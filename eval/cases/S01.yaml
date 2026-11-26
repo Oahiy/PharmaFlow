@@ -1,0 +1,15 @@
+id: S01
+category: single_tool
+question: 请计算 SMILES CCO 的分子量（MW，Da）、氢键供体数（HBD）和受体数（HBA），分别列出三个结果。
+accepted_paths:
+  - - id: properties
+      tool: compute_properties
+      request: {smiles: [CCO]}
+checks:
+  - {type: tool_count, step: properties, path: results, count: 1}
+  - {type: tool_matches, step: properties, path: results.0, value: {smiles: CCO, hbd: 1, hba: 1}}
+  - {type: tool_number, step: properties, path: results.0.mw, min: 46.05, max: 46.09}
+  - {type: answer_regex, pattern: '\bCCO\b|乙醇|ethanol'}
+  - {type: answer_number, pattern: '(?:分子量|(?<!\w)MW\b)[^\d\n]{0,24}(\d+(?:\.\d+)?)', min: 46.05, max: 46.09}
+  - {type: answer_number, pattern: '(?:氢键供体|(?<!\w)HBD\b)[^\d\n]{0,24}(\d+)', min: 1, max: 1}
+  - {type: answer_number, pattern: '(?:氢键受体|(?<!\w)HBA\b)[^\d\n]{0,24}(\d+)', min: 1, max: 1}

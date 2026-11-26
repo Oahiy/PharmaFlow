@@ -1,0 +1,55 @@
+id: M03
+category: multi_hop
+question: |
+  查试验 NCT04685135 的严重（serious）不良事件，按 Pneumonitis 过滤。
+  针对名称恰为 Pneumonitis 的事件，逐组按「组名 受影响人数/风险人数」报告。
+  再从试验治疗组取得主试验药通用名，查 openFDA 的 warnings_and_cautions。
+  引用试验号和说明书 set ID，说明试验数据和说明书警示分别支持什么结论。
+accepted_paths:
+  - - id: events
+      tool: get_trial_adverse_events
+      request: {nct_id: NCT04685135, category: serious, term: Pneumonitis}
+    - id: label
+      tool: get_label_section
+      request: {drug: adagrasib, fields: [warnings_and_cautions]}
+      from_results:
+        drug: {step: events, path: adverse_events.groups.results.0.title}
+checks:
+  - {type: tool_matches, step: events, value: {nct_id: NCT04685135, category: serious, has_results: true}}
+  - type: tool_matches
+    step: events
+    path: adverse_events
+    value:
+      groups:
+        results:
+          - {group_id: EG000, title: Adagrasib}
+          - {group_id: EG001, title: Docetaxel}
+          - {group_id: EG002, title: Crossover Adagrasib}
+      serious:
+        matched_count: 2
+        results:
+          - term: Hypersensitivity pneumonitis
+          - term: Pneumonitis
+            stats:
+              results:
+                - {group_id: EG000, num_affected: 3, num_at_risk: 298}
+                - {group_id: EG001, num_affected: 2, num_at_risk: 140}
+                - {group_id: EG002, num_affected: 0, num_at_risk: 44}
+  - type: tool_matches
+    step: label
+    path: results.0
+    value:
+      set_id: 0b8bf078-34c2-4f45-9012-38a8ac082b01
+      sections:
+        results: [{field: warnings_and_cautions, status: present}]
+  - {type: answer_regex, pattern: '(?<![A-Z0-9])NCT04685135(?![A-Z0-9])'}
+  - {type: answer_regex, pattern: '\b0b8bf078-34c2-4f45-9012-38a8ac082b01\b'}
+  - {type: answer_regex, pattern: '(?:Adagrasib|阿达格拉西布|阿达拉西布)[^\n]{0,30}?(?<!\d)3\s*/\s*298\b'}
+  - {type: answer_regex, pattern: '(?:Docetaxel|多西他赛)[^\n]{0,30}?(?<!\d)2\s*/\s*140\b'}
+  - {type: answer_regex, pattern: '(?:交叉|crossover)[^\n]{0,48}?(?<!\d)0\s*/\s*44\b'}
+judge:
+  threshold: 3
+  rubric:
+    coverage: 给出 Pneumonitis 的完整分组计数、试验编号、说明书 set ID 和相应警示。
+    grounded: 计数和组名与同名事件行一致，警示与实际返回的说明书章节一致。
+    correct_scope: 区分试验的严重事件统计与说明书警示，不把严重事件等同于 CTCAE 分级，不合并 Hypersensitivity pneumonitis，不从两种来源推断可直接比较的发生率。

@@ -1,0 +1,13 @@
+id: E02
+category: exception
+question: 请查 NCT123 的严重不良事件。如果编号格式有问题，请指出问题并说明我该提供什么格式的编号，无需举例。
+accepted_paths:
+  - []
+  - - id: events
+      tool: get_trial_adverse_events
+      request: {nct_id: NCT123, category: serious}
+      expected_error: invalid_nct_format
+checks:
+  - {type: answer_regex, pattern: '无效|不合法|不正确|格式有误|格式错误|不符合|不是有效|invalid|incorrect|wrong format'}
+  - {type: answer_regex, pattern: 'NCT[^\n]{0,22}?(?:8|八)\s*(?:位数字|位数|digits?)|(?:8|八)\s*(?:位数字|位数|digits?)[^\n]{0,22}?NCT|NCT\[(?:0-9|\\d)\]\{8\}'}
+  - {type: answer_regex, pattern: '(?<![A-Z0-9])NCT\d{8}(?![A-Z0-9])|(?<!\d)\d+\s*/\s*\d+(?!\d)', absent: true}

@@ -1,0 +1,19 @@
+id: E01
+category: exception
+question: 请按输入顺序计算 CCO、not-a-smiles 和 CC 这三条 SMILES 的分子量（Da）。每条输入只列一行，保留原输入标识，标出无法解析的行。
+accepted_paths:
+  - - id: properties
+      tool: compute_properties
+      request: {smiles: [CCO, not-a-smiles, CC]}
+checks:
+  - type: tool_matches
+    step: properties
+    path: results
+    value: [{smiles: CCO}, {smiles: not-a-smiles, error: invalid_smiles}, {smiles: CC}]
+  - {type: tool_number, step: properties, path: results.0.mw, min: 46.05, max: 46.09}
+  - {type: tool_number, step: properties, path: results.2.mw, min: 30.05, max: 30.09}
+  - {type: answer_sequence, pattern: '\b(?:CCO|not-a-smiles|CC)\b', values: [CCO, not-a-smiles, CC]}
+  - {type: answer_number, pattern: '\bCCO\b[^\d\n]{0,28}(\d+(?:\.\d+)?)', min: 46.05, max: 46.09}
+  - {type: answer_regex, pattern: '\bnot-a-smiles\b[^\n\d]{0,36}?(?:非法|无效|不合法|无法解析|解析失败|invalid)'}
+  - {type: answer_regex, pattern: '\bnot-a-smiles\b[^\n]*\d', absent: true}
+  - {type: answer_number, pattern: '\bCC\b[^\d\n]{0,28}(\d+(?:\.\d+)?)', min: 30.05, max: 30.09}

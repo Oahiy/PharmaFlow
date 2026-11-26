@@ -1,0 +1,32 @@
+id: M02
+category: multi_hop
+question: |
+  PubMed 检索式请原样使用 "KRAS G12C"[Title/Abstract]，最多返回 5 条。
+  用取得的第 5 条书目标题里的药名去 openFDA 查该药的 warnings_and_cautions 章节。
+  概括其中一项警示，分别引用该书目的 PMID 和说明书的 set ID。
+accepted_paths:
+  - - id: articles
+      tool: search_pubmed
+      request: {query: '"KRAS G12C"[Title/Abstract]', max_results: 5}
+    - id: label
+      tool: get_label_section
+      request: {drug: adagrasib, fields: [warnings_and_cautions]}
+      from_results:
+        drug: {step: articles, path: results.4.title}
+checks:
+  - {type: tool_matches, step: articles, path: results.4, value: {pmid: '37956237', title: Adagrasib}}
+  - type: tool_matches
+    step: label
+    path: results.0
+    value:
+      set_id: 0b8bf078-34c2-4f45-9012-38a8ac082b01
+      sections:
+        results: [{field: warnings_and_cautions, status: present}]
+  - {type: answer_regex, pattern: '(?<!\d)37956237(?!\d)'}
+  - {type: answer_regex, pattern: '\b0b8bf078-34c2-4f45-9012-38a8ac082b01\b'}
+judge:
+  threshold: 3
+  rubric:
+    coverage: 指出第五条书目标题对应 Adagrasib，概括一项警示，并给出 PMID 和说明书 set ID。
+    grounded: PMID 对应检索所得第五项，警示表述受实际返回的说明书章节支持。
+    correct_scope: 将警示归于说明书，准确表述警示性质，不编造发生率或其他结论。

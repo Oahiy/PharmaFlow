@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGenerationChunk
@@ -11,7 +12,14 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from agent.graph import STEP_LIMIT_MESSAGE, build_graph
-from api.main import app, claim_thread, get_agent_graph, get_upload_settings
+from agent.tracing import trace_config
+from api.main import (
+    app,
+    claim_thread,
+    get_agent_graph,
+    get_turn_tracer,
+    get_upload_settings,
+)
 from api.schemas import RunRequest
 from api.streaming import stream_run
 from api.uploads import UploadSettings
@@ -72,6 +80,7 @@ async def client(tmp_path, monkeypatch):
     monkeypatch.setenv("MAX_UPLOAD_ROWS", "2")
     monkeypatch.setitem(app.dependency_overrides, claim_thread, lambda: None)
     monkeypatch.setitem(app.dependency_overrides, get_agent_graph, lambda: graph)
+    monkeypatch.setitem(app.dependency_overrides, get_turn_tracer, lambda: None)
     monkeypatch.setitem(
         app.dependency_overrides, get_upload_settings, UploadSettings.from_env
     )
@@ -471,7 +480,10 @@ async def test_parallel_tool_result_arrives_while_another_tool_is_running(
     ids = []
     async with asyncio.timeout(5):
         async for frame in stream_run(
-            graph, uuid4(), RunRequest(message="并行查询", max_steps=20)
+            graph,
+            uuid4(),
+            RunRequest(message="并行查询", max_steps=20),
+            trace_for_thread=None,
         ):
             if frame.startswith("event: tool_result\n"):
                 data = json.loads(frame.splitlines()[1].removeprefix("data: "))
@@ -494,6 +506,21 @@ async def test_stream_only_model_resumes_without_mixing_answer_tokens(
 
     graph = build_graph(StreamingModel(), [flaky_lookup], InMemorySaver())
     monkeypatch.setitem(app.dependency_overrides, get_agent_graph, lambda: graph)
+    metadata_seen = []
+
+    class TraceRecorder(BaseCallbackHandler):
+        def on_chain_start(
+            self, serialized, inputs, *, metadata, parent_run_id, **kwargs
+        ):
+            if parent_run_id is None:
+                metadata_seen.append(metadata)
+
+    def trace_for_thread(thread_id):
+        return trace_config([TraceRecorder()], thread_id=thread_id, tags=["api-test"])
+
+    monkeypatch.setitem(
+        app.dependency_overrides, get_turn_tracer, lambda: trace_for_thread
+    )
     url = f"/api/threads/{uuid4()}"
     first = events(await client.post(url + "/runs", json={"message": "查询"}))
     assert first[-1] == ("error", {"detail": "ConnectionError: 未连接"})
@@ -510,3 +537,8 @@ async def test_stream_only_model_resumes_without_mixing_answer_tokens(
     history = (await client.get(url)).json()["messages"]
     assert history[3]["content"] == '答案：\n"3"'
     assert history[4]["content"] == "新查询"
+    assert len(metadata_seen) == 3  # First attempt, recovery, then the new turn.
+    assert {metadata["langfuse_session_id"] for metadata in metadata_seen} == {
+        url.rsplit("/", 1)[-1]
+    }
+    assert all(metadata["langfuse_tags"] == ["api-test"] for metadata in metadata_seen)

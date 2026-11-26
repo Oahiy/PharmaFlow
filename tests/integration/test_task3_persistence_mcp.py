@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from agent import cli, llm, mcp_client
 from agent.config import AgentSettings, LLMSettings
 from agent.graph import build_graph
-from agent.mcp_client import open_mcp_tools
+from agent.mcp_client import lit_env_from_process, open_mcp_tools
 from agent.persistence import open_connection_pool, setup_checkpointer
 from mcp_servers.chem.models import PropertiesResult
 from mcp_servers.lit.config import DEFAULT_RECORDINGS_DIR
@@ -119,7 +119,7 @@ async def test_cli_resumes_pending_tool_before_reading_input(
     )
 
     @asynccontextmanager
-    async def fake_mcp_tools():
+    async def fake_mcp_tools(*, lit_env):
         yield [echo]
 
     prompts = []
@@ -282,7 +282,10 @@ async def test_mcp_graph_reuses_stdio_processes_and_replays(
         + [AIMessage(content="已查询试验记录和分子性质。")]
     )
 
-    async with asyncio.timeout(30), open_mcp_tools() as tools:
+    async with (
+        asyncio.timeout(30),
+        open_mcp_tools(lit_env=lit_env_from_process()) as tools,
+    ):
         graph = build_graph(model, tools, InMemorySaver())
         result = await graph.ainvoke(
             {

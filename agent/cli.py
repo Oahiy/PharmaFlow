@@ -14,7 +14,7 @@ async def chat(settings: AgentSettings, thread_id: str, max_steps: int) -> None:
 
     from .graph import STEP_LIMIT_MESSAGE, build_graph, resume_config
     from .llm import create_llm
-    from .mcp_client import open_mcp_tools
+    from .mcp_client import lit_env_from_process, open_mcp_tools
     from .persistence import open_connection_pool, setup_checkpointer
     from .state import AgentState
 
@@ -34,7 +34,7 @@ async def chat(settings: AgentSettings, thread_id: str, max_steps: int) -> None:
     }
     async with open_connection_pool(settings.database_url.get_secret_value()) as pool:
         checkpointer = await setup_checkpointer(pool)
-        async with open_mcp_tools() as tools:
+        async with open_mcp_tools(lit_env=lit_env_from_process()) as tools:
             graph = build_graph(model, tools, checkpointer)
             print(f"会话 ID：{thread_id}。下次可通过 --thread-id 续聊。")
             snapshot = await graph.aget_state(thread_config)

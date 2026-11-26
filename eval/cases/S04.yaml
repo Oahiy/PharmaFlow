@@ -1,0 +1,19 @@
+id: S04
+category: single_tool
+question: |
+  在 ClinicalTrials.gov 搜索，疾病条件使用 NSCLC，关键词使用 KRAS G12C，分期使用 PHASE3，最多返回 5 条，不限定药物。
+  请报告总命中数、本次返回数和前两项的 NCT 号，按检索顺序列出。
+accepted_paths:
+  - - id: trials
+      tool: search_trials
+      request: {condition: NSCLC, query: KRAS G12C, phase: PHASE3, max_results: 5}
+checks:
+  - {type: tool_matches, step: trials, value: {total_count: 25, returned_count: 5}}
+  - {type: tool_matches, step: trials, path: results.0.nct_id, value: NCT04303780}
+  - {type: tool_matches, step: trials, path: results.1.nct_id, value: NCT04685135}
+  - {type: answer_number, pattern: '(?:总命中|总数|共计|共|total)[^\d\n]{0,16}(\d+)', min: 25, max: 25}
+  - {type: answer_number, pattern: '(?:返回|retrieved)[^\d\n]{0,16}(\d+)', min: 5, max: 5}
+  - type: answer_sequence
+    pattern: '(?<![A-Z0-9])NCT\d{8}(?![A-Z0-9])'
+    values: [NCT04303780, NCT04685135]
+    allow_trailing: true

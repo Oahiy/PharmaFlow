@@ -1,0 +1,37 @@
+id: S05
+category: single_tool
+question: |
+  查试验 NCT04303780 的严重（serious）不良事件，按原词 Anaemia 过滤。
+  请标明试验号和事件口径，并逐组按「组名 受影响人数/风险人数」报告 Anaemia 的数据。
+accepted_paths:
+  - - id: events
+      tool: get_trial_adverse_events
+      request: {nct_id: NCT04303780, category: serious, term: Anaemia}
+checks:
+  - type: tool_matches
+    step: events
+    value: {nct_id: NCT04303780, category: serious, has_results: true}
+  - type: tool_matches
+    step: events
+    path: adverse_events
+    value:
+      groups:
+        results:
+          - {group_id: EG000, title: Docetaxel}
+          - {group_id: EG001, title: AMG 510}
+          - {group_id: EG002, title: 'Docetaxel, Then Switched to AMG 510'}
+      serious:
+        matched_count: 1
+        results:
+          - term: Anaemia
+            stats:
+              results:
+                - {group_id: EG000, num_affected: 5, num_at_risk: 151}
+                - {group_id: EG001, num_affected: 1, num_at_risk: 169}
+                - {group_id: EG002, num_affected: 0, num_at_risk: 46}
+  - {type: answer_regex, pattern: '(?<![A-Z0-9])NCT04303780(?![A-Z0-9])'}
+  - {type: answer_regex, pattern: '严重|serious'}
+  - {type: answer_regex, pattern: '贫血|Anaemia|Anemia'}
+  - {type: answer_regex, pattern: '(?:Docetaxel|多西他赛)[^\n]{0,30}?(?<!\d)5\s*[/／]\s*151\b'}
+  - {type: answer_regex, pattern: '(?:AMG\s*510|sotorasib|索托拉西布)[^\n]{0,30}?(?<!\d)1\s*[/／]\s*169\b'}
+  - {type: answer_regex, pattern: '(?:交叉|转用|切换|转换|switched|crossover)[^\n]{0,48}?(?<!\d)0\s*[/／]\s*46\b'}

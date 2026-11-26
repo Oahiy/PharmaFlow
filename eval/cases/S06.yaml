@@ -1,0 +1,48 @@
+id: S06
+category: single_tool
+question: 请查 openFDA 中通用名 sotorasib 的最近一份匹配说明书，仅查 boxed_warning 和 warnings_and_cautions，分别报告是否有该章节，并给出说明书的 set ID 和生效日期。
+accepted_paths:
+  - - id: label
+      tool: get_label_section
+      request: {drug: sotorasib, fields: [boxed_warning, warnings_and_cautions]}
+checks:
+  - type: tool_matches
+    step: label
+    value: {total_count: 1, returned_count: 1}
+  - type: tool_matches
+    step: label
+    path: results.0
+    value: {set_id: c80a362c-7ac3-4894-a076-0691e68ef8c1, effective_time: '20261103'}
+  - type: tool_count
+    step: label
+    path: results.0.sections.results
+    where: {field: boxed_warning, status: missing}
+    count: 1
+  - type: tool_count
+    step: label
+    path: results.0.sections.results
+    where:
+      field: warnings_and_cautions
+      status: present
+      content:
+        results:
+          - {truncated: true}
+    count: 1
+  - {type: answer_regex, pattern: '(?:boxed[ _]warning|黑框警告|黑框警示)[^\n]{0,30}?(?:missing|缺失|未找到|未提供|未列出|未收录|没有|无|不存在)'}
+  - type: answer_regex
+    pattern: >-
+      (?x)
+      (?:warnings[ _]and[ _](?:cautions|precautions)|警告与注意事项|警示与注意事项)
+      (?:[ \t]*\([^()\n]*\))?(?:[ \t]*章节)?
+      [ \t|:【-]*(?:✅️?[ \t]*)?
+      (?:present\b|found\b|存在|有(?:此|该)?章节|有\b|已提供|已列出|提供|列出)
+  - {type: answer_regex, pattern: '\bc80a362c-7ac3-4894-a076-0691e68ef8c1\b'}
+  - {type: answer_regex, pattern: '(?<!\d)(?:20261103|2026[-/年]11[-/月]0?3)(?!\d)'}
+  - type: answer_regex
+    absent: true
+    pattern: >-
+      (?x)
+      内容[ \t]*(?:已[ \t]*)?(?:完整|全部)[ \t]*(?:返回|提供)
+      | (?:内容|原文|返回结果)[ \t]*(?:未被截断|未截断|没有截断|无截断)
+      | \b(?:content|text|excerpt)[ \t]+(?:was[ \t]+)?
+        (?:returned[ \t]+in[ \t]+full|not[ \t]+truncated)\b

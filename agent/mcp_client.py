@@ -2,7 +2,7 @@
 
 import os
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 
 from langchain_core.tools import BaseTool
@@ -14,17 +14,22 @@ from mcp_servers.chem.datasets import upload_directory
 from .config import PROJECT_ROOT
 
 
+def lit_env_from_process() -> dict[str, str]:
+    return {
+        name: os.environ[name]
+        for name in ("LIT_MCP_MODE", "LIT_MCP_RECORDINGS_DIR", "NCBI_API_KEY")
+        if name in os.environ
+    }
+
+
 @asynccontextmanager
-async def open_mcp_tools() -> AsyncIterator[list[BaseTool]]:
+async def open_mcp_tools(
+    *, lit_env: Mapping[str, str]
+) -> AsyncIterator[list[BaseTool]]:
     stdio_env = {
         "PATH": os.pathsep.join(os.get_exec_path()),
         "PYTHONPATH": str(PROJECT_ROOT),
         "FASTMCP_ENV_FILE": os.devnull,
-    }
-    lit_env = {
-        name: os.environ[name]
-        for name in ("LIT_MCP_MODE", "LIT_MCP_RECORDINGS_DIR", "NCBI_API_KEY")
-        if name in os.environ
     }
     client = MultiServerMCPClient(
         {
