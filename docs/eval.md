@@ -338,6 +338,29 @@ uv run --no-sync python -m eval.run --tag v3-self-healing --cases eval/cases_sel
   uv run --no-sync python -m eval.run --tag v3-self-healing --cases eval/cases_self_healing
 ```
 
+2026-11-26 在提交 `09c1684e08f993160952fb78cda50600b5e692fa` 完成四轮。Postgres 中四轮均记录 `git_dirty=false`。Agent 使用 `deepseek-v4-pro`，温度 0，关闭 thinking，模型调用上限为 10 次。提示词、工具定义和回放摘要在四轮中一致，用例摘要在各自套件的两轮中一致。
+
+| 输入 | SHA-256 摘要 |
+| --- | --- |
+| 系统提示词 | `1b07eb1ed4c1230bee7199dda63d9b841f8d33343c6800d180826c6369fcb38f` |
+| 工具定义 | `f27571c4c58da09477f2dbac2ed8f1f761e85f33776d1c8410cf2afeea61cc73` |
+| 回放录制 | `b1c114e32203fdb72535fea39124a374d5008dc2d6156401efda1911ecf20a9e` |
+| 基础用例 | `54e9f689f88c9704189d918bd1a407824cd341b625115645789215938bdf3968` |
+| 自愈用例 | `2969662b07b523a255aa1ff4d009cfb08d90c7140cfc1b788df91337db4ac2e1` |
+
+| 轮次 | Run ID | 开始至结束（UTC+8） | 任务成功 | 平均输入 token | 平均耗时（ms） |
+| --- | --- | --- | ---: | ---: | ---: |
+| 基础第 1 轮 | `0bd743d8-2d38-4470-a657-e6dd03f48ff4` | 16:35:53–16:37:05 | 12/12 | 7,152.3 | 5,068.9 |
+| 基础第 2 轮 | `25fb9fa3-6ac1-4039-aeb5-3dc864641969` | 16:37:08–16:38:21 | 11/12 | 7,152.0 | 5,066.1 |
+| 自愈第 1 轮 | `1b013693-ce82-4b1e-aae9-6b393f8bdfdd` | 16:38:24–16:38:59 | 3/3 | 7,624.3 | 6,085.7 |
+| 自愈第 2 轮 | `4565550d-8255-44a9-b4e9-c6f5f878474d` | 16:39:02–16:39:42 | 3/3 | 8,852.3 | 7,474.0 |
+
+四轮都完整入库，回放未命中和缺 token 均为 0。工具选择和参数合法率均为 100%。基础评测计端到端耗时，自愈评测计预置失败之后的修正耗时。
+
+**基础用例两轮合计通过 23/24（95.8%）。** E01 两轮均通过。S01 和 S02 分别使用 `compute_properties` 和 `filter_druglike`。第二轮 E02 正确指出编号格式问题，随后附上了示例编号 `NCT01234567`，因此触发禁止示例编号的规则（`rule_failed`，trace ID `7294fe383e89a7b3522cff6946deb281`）。基础用例与回放摘要匹配 v2 第二轮，v3 两轮平均每例输入 7,152.2 token，比 v2 第二轮增加 1,429.2 个（25.0%）。 [E02 用例](../eval/cases/E02.yaml)
+
+**自愈评测共 3 条用例、2 轮，3 轮内恢复率为 6/6（100%）。** H01 两轮均在 2 次执行内完成，诊断和修正都传入原始 `candidates` ID。H02 两轮各用 1 次，H03 两轮分别用 1 次和 2 次。
+
 ## 打开 Langfuse trace
 
 正式评测首先检查追踪已开启、两个 key 已填写，随后调用 `auth_check()`。退出时用同一个默认客户端 flush。API 默认也在启动时验证凭据，关闭 API 追踪可设置 `LANGFUSE_TRACING_ENABLED=false`。两者的 session 都对应 `thread_id`。
