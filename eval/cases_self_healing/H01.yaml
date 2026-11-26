@@ -1,0 +1,46 @@
+id: H01
+category: self_healing
+question: >-
+  请用 run_python 读取内置 candidates CSV，统计 ic50_nm 的非空记录数和最小值，
+  并把 ic50_nm 直方图保存为 /work/output/ic50.png。stdout 只打印两行，
+  格式为 rows=<整数> 和 min_ic50_nm=<两位小数>。最终回答列出这两行并说明图已生成。
+initial_failure: {kind: code, stderr_contains: "KeyError: 'IC50_NM'"}
+initial_run_python:
+  dataset_ids: [candidates]
+  code: |
+    import pandas as pd
+
+    data = pd.read_csv("/work/input/candidates.csv")
+    values = data["IC50_NM"].dropna()
+    print(f"rows={len(values)}")
+    print(f"min_ic50_nm={values.min():.2f}")
+accepted_paths:
+  - - id: repair
+      tool: run_python
+      request: &candidate_data {dataset_ids: [candidates]}
+  - - &first_attempt
+      id: first_attempt
+      tool: run_python
+      request: *candidate_data
+      allow_repairable_failure: true
+    - id: repair
+      tool: run_python
+      request: *candidate_data
+      after: [first_attempt]
+  - - *first_attempt
+    - id: second_attempt
+      tool: run_python
+      request: *candidate_data
+      allow_repairable_failure: true
+      after: [first_attempt]
+    - id: repair
+      tool: run_python
+      request: *candidate_data
+      after: [second_attempt]
+checks:
+  - {type: tool_matches, step: repair, path: stdout, value: "rows=50\nmin_ic50_nm=1.70\n"}
+  - {type: tool_count, step: repair, path: files, count: 1}
+  - {type: tool_matches, step: repair, path: files.0, value: {filename: ic50.png, media_type: image/png}}
+  - {type: answer_regex, pattern: 'rows\s*=\s*50\b'}
+  - {type: answer_regex, pattern: 'min_ic50_nm\s*=\s*1\.70\b'}
+  - {type: answer_regex, pattern: '图.*(?:生成|保存)|ic50\.png'}

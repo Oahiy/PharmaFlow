@@ -1,5 +1,6 @@
 """Streamlit client for the PharmaFlow HTTP API."""
 
+import json
 import os
 from uuid import UUID
 
@@ -8,6 +9,7 @@ import streamlit as st
 from httpx_sse import SSEError, connect_sse
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
+RUN_PYTHON = "run_python"
 
 
 def error_detail(exc: httpx.HTTPError) -> str:
@@ -72,9 +74,46 @@ def sidebar(client: httpx.Client) -> None:
             st.caption("列名：" + "、".join(dataset["columns"]))
 
 
+def show_python_code(panel, args: dict) -> None:
+    match args:
+        case {"request": {"code": str(code), **inputs}}:
+            if inputs:
+                panel.json(inputs)
+            panel.code(code, language="python")
+        case _:
+            panel.json(args)
+
+
+def show_python_result(
+    client: httpx.Client, details, charts, output: str, files: list[dict] | None
+) -> None:
+    if files is None:
+        details.error(output)
+        return
+    result = json.loads(output)
+    if result["error"] is not None:
+        details.error(result["error"]["message"])
+    for stream in ("stdout", "stderr"):
+        if result[stream]:
+            details.caption(stream)
+            details.code(result[stream], language=None)
+    with charts:
+        for file in files:
+            try:
+                response = client.get(
+                    f"/api/threads/{st.session_state.thread_id}/artifacts/{file['artifact_id']}"
+                )
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                st.error(error_detail(exc))
+                continue
+            st.image(response.content, caption=file["filename"])
+
+
 def show_run(client: httpx.Client, message: str) -> str | None:
     activity = st.container()
     answer = st.empty()
+    charts = st.container()
     text = ""
     dataset = st.session_state.dataset
     payload = {
@@ -106,15 +145,22 @@ def show_run(client: httpx.Client, message: str) -> str | None:
                             status.write(f"调用工具 · {data['tool_name']}")
                             if "raw_args" in data:
                                 status.text(f"无法解析的原始参数：{data['raw_args']!r}")
+                            elif data["tool_name"] == RUN_PYTHON:
+                                show_python_code(status, data["args"])
                             else:
                                 status.json(data["args"])
                         case "tool_result":
                             output = data["output"]
-                            summary = (
-                                output[:300] + "…" if len(output) > 300 else output
-                            )
                             status.write(f"{data['tool_name']} · {data['status']}")
-                            status.code(summary, language=None)
+                            if data["tool_name"] == RUN_PYTHON:
+                                show_python_result(
+                                    client, status, charts, output, data.get("files")
+                                )
+                            else:
+                                summary = (
+                                    output[:300] + "…" if len(output) > 300 else output
+                                )
+                                status.code(summary, language=None)
                         case "token":
                             text += data["content"]
                             answer.markdown(text)
@@ -137,16 +183,32 @@ def show_run(client: httpx.Client, message: str) -> str | None:
             return None
 
 
-def render_history(messages: list[dict], pending: bool) -> None:
+def render_history(client: httpx.Client, messages: list[dict], pending: bool) -> None:
     for index, message in enumerate(messages):
         role = message["role"]
         if role == "human":
             st.chat_message("user").write(message["content"])
-        elif role == "ai" and not (
-            message["tool_calls"] or message["invalid_tool_calls"]
-        ):
-            st.chat_message("assistant").write(message["content"])
+        elif role == "ai":
+            if not (message["tool_calls"] or message["invalid_tool_calls"]):
+                st.chat_message("assistant").write(message["content"])
+            for call in message["tool_calls"]:
+                match call:
+                    case {"name": "run_python", "args": args}:
+                        with st.chat_message("assistant"):
+                            show_python_code(st.expander("沙盒代码"), args)
         elif role == "tool":
+            if message.get("name") == RUN_PYTHON:
+                with st.chat_message("assistant"):
+                    failed = message["status"] == "error"
+                    label = "沙盒执行失败" if failed else "沙盒执行完成"
+                    show_python_result(
+                        client,
+                        st.expander(label, expanded=failed),
+                        st.container(),
+                        message["content"],
+                        message.get("files"),
+                    )
+                continue
             # A capped turn ends with the graph's explanatory ToolMessage.
             last_in_turn = (
                 not pending
@@ -170,7 +232,7 @@ def main() -> None:
             st.sidebar.error(error_detail(exc))
             st.stop()
         pending = bool(thread["next_nodes"])
-        render_history(thread["messages"], pending)
+        render_history(client, thread["messages"], pending)
         if pending:
             st.info("上一轮尚未结束，待执行节点：" + "、".join(thread["next_nodes"]))
         if message := st.chat_input("输入问题"):

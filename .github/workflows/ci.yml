@@ -38,3 +38,5 @@ jobs:
       - run: uv run --locked ruff format --check .
       - run: uv run --locked pytest tests/unit
       - run: uv run --locked pytest tests/integration
+      - run: docker build -t pharmaflow-sandbox:1 sandbox
+      - run: uv run --locked pytest -m docker tests/docker

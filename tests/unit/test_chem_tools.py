@@ -1,3 +1,5 @@
+import csv
+
 import pytest
 from pydantic import ValidationError
 
@@ -6,7 +8,9 @@ from mcp_servers.chem.models import (
     DruglikeInput,
     DruglikeMolecule,
     DruglikeResult,
+    ExportPropertiesInput,
     InvalidMolecule,
+    InvalidPropertyRow,
     LipinskiThresholds,
     MoleculeInput,
     MoleculeProperties,
@@ -242,3 +246,49 @@ def test_dataset_symlink_cannot_access_outside_data(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="Dataset ID must resolve within data/"):
         tools.compute_properties(MoleculeInput(dataset_id="linked"))
+
+
+def test_export_properties_preserves_csv_columns_and_reports_invalid_rows(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    (tmp_path / "upload_source.csv").write_text(
+        "name,smiles,ic50_nm\nfirst,CCO,1.5\nbroken,bad-smiles,2\nlast,C,3\n",
+        encoding="utf-8",
+    )
+    result = tools.export_properties(ExportPropertiesInput(dataset_id="upload_source"))
+    assert result.dataset_id is not None
+    assert result.row_count == 2
+    assert result.invalid_rows == [InvalidPropertyRow(row=2)]
+    with (tmp_path / f"{result.dataset_id}.csv").open(
+        newline="", encoding="utf-8"
+    ) as file:
+        reader = csv.DictReader(file)
+        assert reader.fieldnames == result.columns
+        first, last = reader
+    assert [first["name"], last["name"]] == ["first", "last"]
+    assert [first["ic50_nm"], last["ic50_nm"]] == ["1.5", "3"]
+    expected, _ = tools.compute_properties(MoleculeInput(smiles=["CCO", "C"])).results
+    assert float(first["qed"]) == pytest.approx(expected.qed)
+    assert float(first["mw"]) == pytest.approx(expected.mw)
+    assert float(first["logp"]) == pytest.approx(expected.logp)
+
+
+def test_export_without_valid_rows_does_not_publish_dataset(monkeypatch, tmp_path):
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    source = tmp_path / "upload_source.csv"
+    source.write_text("smiles\nbad-smiles\n", encoding="utf-8")
+    result = tools.export_properties(ExportPropertiesInput(dataset_id="upload_source"))
+    assert result.dataset_id is None
+    assert result.invalid_rows == [InvalidPropertyRow(row=1)]
+    assert result.row_count == 0
+    assert list(tmp_path.iterdir()) == [source]
+
+
+def test_export_rejects_conflicting_property_columns(monkeypatch, tmp_path):
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    source = tmp_path / "upload_source.csv"
+    source.write_text("smiles,qed\nCCO,0.1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="existing property columns: qed"):
+        tools.export_properties(ExportPropertiesInput(dataset_id="upload_source"))
+    assert list(tmp_path.iterdir()) == [source]

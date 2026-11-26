@@ -1,0 +1,44 @@
+id: H02
+category: self_healing
+question: >-
+  请用 run_python 计算 candidates 全部非空 ic50_nm 记录的精确中位数。
+  相同输入只需统计一次，stdout 打印 rows=<记录数> 和 median_ic50_nm=<两位小数> 两行。
+  最终回答给出记录数、中位数和单位。
+initial_failure: {kind: timeout}
+initial_run_python:
+  dataset_ids: [candidates]
+  code: |
+    import pandas as pd
+
+    values = pd.read_csv("/work/input/candidates.csv")["ic50_nm"].dropna()
+    for _ in range(1_000_000_000):
+        median = values.median()
+    print(f"rows={len(values)}")
+    print(f"median_ic50_nm={median:.2f}")
+accepted_paths:
+  - - id: repair
+      tool: run_python
+      request: &candidate_data {dataset_ids: [candidates]}
+  - - &first_attempt
+      id: first_attempt
+      tool: run_python
+      request: *candidate_data
+      allow_repairable_failure: true
+    - id: repair
+      tool: run_python
+      request: *candidate_data
+      after: [first_attempt]
+  - - *first_attempt
+    - id: second_attempt
+      tool: run_python
+      request: *candidate_data
+      allow_repairable_failure: true
+      after: [first_attempt]
+    - id: repair
+      tool: run_python
+      request: *candidate_data
+      after: [second_attempt]
+checks:
+  - {type: tool_matches, step: repair, path: stdout, value: "rows=50\nmedian_ic50_nm=77.50\n"}
+  - {type: answer_regex, pattern: '(?<![\d.])50(?![\d.])'}
+  - {type: answer_regex, pattern: '77\.50?\s*nM\b'}

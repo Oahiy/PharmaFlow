@@ -50,7 +50,7 @@ uv run python -m eval.run --tag v2 &&
 uv run python -m eval.run --summary "$RUN_ID"
 ```
 
-等两轮都完整结束，再执行下面的命令。按终端提示依次粘贴两次运行打印的 UUID，每个 ID 输入后按回车。对比要求用例摘要和录制摘要分别一致。逐用例差值为第 2 轮减第 1 轮。judge 分数和 token 任一侧为 `NULL` 时，相应差值为 `NULL`。成功状态按 0 和 1 求差，有 `replay_miss` 的用例成功差值显示 `NULL`。
+等两轮都完整结束，再执行下面的命令。按终端提示依次粘贴两次运行打印的 UUID，每个 ID 输入后按回车。对比要求用例摘要和录制摘要分别一致。系统提示词和工具定义摘要各显示「一致」「不同」或「缺少记录」，支持比较改动前后的模型输入。逐用例差值为第 2 轮减第 1 轮。judge 分数和 token 任一侧为 `NULL` 时，相应差值为 `NULL`。成功状态按 0 和 1 求差，有 `replay_miss` 的用例成功差值显示 `NULL`。
 
 ```sh
 printf '第一轮 run_id ' &&
@@ -195,13 +195,14 @@ Judge 按覆盖要求、证据可追溯、口径正确三个布尔项打分，�
 1. `replay_miss`
 2. `invalid_args`
 3. `agent_error`
-4. `step_limit`
-5. `tool_error`
-6. `wrong_tool`
-7. `rule_failed`
-8. `judge_call_error`
-9. `judge_parse_error`
-10. `judge_below_threshold`
+4. `step_limit`（Agent 达到图的模型调用上限）
+5. `repair_budget_exceeded`（自愈评测实际修正超过 3 次）
+6. `tool_error`
+7. `wrong_tool`
+8. `rule_failed`
+9. `judge_call_error`
+10. `judge_parse_error`
+11. `judge_below_threshold`
 
 只有满足预期工具及参数约束的调用才能记为 `replay_miss`。真实零结果和分子批次中的 `invalid_smiles` 属于成功工具响应。计入单例的异常保存类型、消息和 traceback。数据库、MCP 会话和明确的模型服务故障会中止运行。
 
@@ -210,12 +211,132 @@ Judge 按覆盖要求、证据可追溯、口径正确三个布尔项打分，�
 | 表 | 列与键 |
 | --- | --- |
 | `eval.runs` | `run_id uuid` 主键，`tag text`，`git_commit text`，`user_id uuid` 唯一，`config jsonb`，`started_at timestamptz`，`finished_at timestamptz` 可空。 |
-| `eval.cases` | `case_id text` 主键，`category text` 取 `single_tool`、`multi_hop`、`exception`。每次运行从 YAML 同步。 |
-| `eval.results` | `run_id uuid` 与 `case_id text` 为联合主键，分别引用前两张表。`thread_id uuid` 唯一，`trace_id text` 为 32 位十六进制，`success boolean`、`tools_correct boolean`、`params_valid boolean` 可空、`judge_score smallint` 可空、`failure_type text` 可空、`error_detail jsonb` 可空、`input_tokens bigint` 可空、`elapsed_ms bigint`。 |
+| `eval.cases` | `case_id text` 主键，`category text` 取 `single_tool`、`multi_hop`、`exception`、`self_healing`。每次运行从 YAML 同步。 |
+| `eval.results` | `run_id uuid` 与 `case_id text` 为联合主键，分别引用前两张表。`thread_id uuid` 唯一，`trace_id text` 为 32 位十六进制，`success boolean`、`tools_correct boolean`、`params_valid boolean` 可空、`judge_score smallint` 可空、`failure_type text` 可空、`error_detail jsonb` 可空、`input_tokens bigint` 可空、`elapsed_ms bigint`、`repair_attempts smallint` 可空。 |
 
-失败类型、类别、分数范围、计数与耗时均由 SQL 约束。运行配置记录模型、端点、温度、thinking、步数、回放设置、judge 细则版本与阈值、Git commit、工作区状态、用例清单及两份 SHA-256 摘要。摘要对各文件的相对路径和原始内容计算。端点记录省略 URL 中的用户信息、查询参数和片段，配置中无密钥。 [建表 SQL](../eval/schema.sql) · [汇总 SQL](../eval/summary.sql)
+失败类型、类别、分数范围、计数与耗时均由 SQL 约束。运行配置记录模型、端点、温度、thinking、步数、回放设置、judge 细则版本与阈值、Git commit、工作区状态、用例清单及四份 SHA-256 摘要。用例和回放摘要对各文件的相对路径和原始内容计算。`system_prompt_sha256` 对 Agent 系统提示词文本计算，`tool_schema_sha256` 对传给 Agent 的工具定义计算，保留工具列表顺序并对 JSON 对象键排序。端点记录省略 URL 中的用户信息、查询参数和片段，配置中无密钥。 [建表 SQL](../eval/schema.sql) · [汇总 SQL](../eval/summary.sql)
 
 `schema.sql` 可重复初始化。已有表新增列或变更具名 `CHECK` 约束时，需执行对应的 `ALTER TABLE` 迁移。
+
+## Task 6 自愈评测
+
+`eval/cases_self_healing` 单独运行并拥有独立的 `cases_sha256`。全新评测库由当前 `schema.sql` 初始化。已有 Task 5 评测库先执行 006，增加 `self_healing` 类别和可空的 `eval.results.repair_attempts`。已有结果的修正次数为 `NULL`。 [006 迁移 SQL](../eval/migrations/006_sandbox_self_healing.sql)
+
+```sh
+docker compose exec -T postgres psql -U pharmaflow -d pharmaflow -v ON_ERROR_STOP=1 \
+  < eval/migrations/006_sandbox_self_healing.sql
+```
+
+已应用 006 的评测库执行 007，支持记录 `repair_budget_exceeded` 和超过 3 次的实际执行次数。 [007 迁移 SQL](../eval/migrations/007_repair_budget_exceeded.sql)
+
+```sh
+docker compose exec -T postgres psql -U pharmaflow -d pharmaflow -v ON_ERROR_STOP=1 \
+  < eval/migrations/007_repair_budget_exceeded.sql
+```
+
+构建镜像并按前文配置 DeepSeek、数据库和 Langfuse 后运行。
+
+```sh
+docker build -t pharmaflow-sandbox:1 sandbox
+uv run python -m eval.run --tag v3-self-healing --cases eval/cases_self_healing
+```
+
+每轮有 3 条用例。运行器在首个模型调用前执行预置步骤，并核对实际错误类型。列名错误还须命中指定的 traceback。预置步骤和结果进入模型上下文，评分和计时从后续修正开始。Docker 基础设施故障或预置步骤未产生指定错误时，运行中止。
+
+| 用例 | 预置失败 | 恢复验收 |
+| --- | --- | --- |
+| H01 | 在原始 CSV 中读取大写 `IC50_NM` | 返回正确的非空记录数和最小值，并生成直方图。[H01 规则](../eval/cases_self_healing/H01.yaml) |
+| H02 | 重复计算同一组记录的中位数，触发 15 秒超时 | 在执行时间内返回全部 50 条记录的精确中位数 77.50 nM。[H02 规则](../eval/cases_self_healing/H02.yaml) |
+| H03 | 调用 chem-mcp 的 `export_properties`，用它返回的数据集执行脚本，读取大写 `QED` 触发 `KeyError` | 修正脚本沿用本轮派生 ID，输出十条按 QED 降序排列的 ChEMBL 记录和 MW–LogP 散点图。排名检查逐行核对 ID 和四位小数的 QED，允许另外打印保存提示。用例内的 `exported_properties` 在执行和判分前绑定到真实 ID。[H03 规则](../eval/cases_self_healing/H03.yaml) |
+
+运行时从当前用户消息后的可修复失败推导额度。首次失败后最多尝试 3 次修正。成功的诊断脚本不消耗失败额度。`dataset_ids` 为必填参数，无 CSV 输入时显式传 `[]`。缺参时 ToolNode 将校验错误回给模型，调用在启动容器前结束。
+
+评测从预置失败之后开始计数。模型实际执行的诊断脚本、成功的修正和可修复失败都计入 `repair_attempts`。任务成功要求在 3 次执行内传入指定的 `dataset_ids` 并生成符合规则的结果。超过 3 次计为 `repair_budget_exceeded`，`repair_attempts` 记录实际次数。汇总表 `self_healing` 行的「任务成功」即 3 轮内的恢复率。报告时同时列出成功数、用例数和运行轮数。OOM 的专项覆盖在执行器和 Docker 测试中。
+
+Task 5 的 v2 正式基线使用另一份用例摘要。使用自愈目录运行的新结果可和相同摘要的自愈运行比较。
+
+### 开发期自愈评测与复核
+
+2026-11-26 完成首轮开发期自愈评测，运行 ID 为 `6b0b6c95-4f68-45f5-8636-ddb701cede67`。3 条用例均已入库并可评分，按当时规则入库的恢复率为 **1/3（33.3%）**。工具选择和参数合法率均为 100%，平均输入 7,440.3 token，修正阶段平均耗时 7,951.7 ms。该轮的用例摘要为 `978acd1473c2864ae22ca5f46e56fb402c118b4be7d88cf95a105a17e4a2c406`。
+
+| 用例 | 检查点复核 | 修正次数 |
+| --- | --- | ---: |
+| H01 | 第一次执行列出 CSV 列名，第二次生成正确的统计和直方图。原规则把成功的诊断执行记成工具错误。 | 2 |
+| H02 | 超时后一次执行算出精确中位数 77.50 nM。 | 1 |
+| H03 | 十条排名和四位小数的 QED 全部匹配，散点图已生成。原规则按整段 stdout 比对，被末行 `saved` 触发。 | 1 |
+
+按修正规则只读重判上述检查点，**3/3 通过**。重判采用的用例摘要为 `2969662b07b523a255aa1ff4d009cfb08d90c7140cfc1b788df91337db4ac2e1`。这次重判复用了同一批模型输出，Postgres 中的原运行记录对应当时的规则与摘要。
+
+### 修正规则后的开发期自愈复跑
+
+2026-11-26 用修正后的规则重新调用模型完成一轮评测，标签为 `v3-self-healing-score-fix`，运行 ID 为 `668accc8-f5f2-4ed8-803a-56ad48aa0cec`。本轮用例摘要与上面的重判一致，3 条用例全部入库并可评分，**3 轮内恢复率为 3/3（100%）**。工具选择和参数合法率均为 100%，平均输入 7,441.3 token，修正阶段平均耗时 7,583.0 ms。
+
+| 用例 | 修正次数 | 输入 token | 修正阶段耗时（ms） |
+| --- | ---: | ---: | ---: |
+| H01 | 2 | 9,803 | 8,129 |
+| H02 | 1 | 5,566 | 4,692 |
+| H03 | 1 | 6,955 | 9,928 |
+
+### 提示词修订后的开发期自愈复跑
+
+2026-11-26 修订 E01 相关的输出格式提示词并应用 007 迁移后再次运行，运行 ID 为 `9379a15c-c5cd-4728-abf0-6d9b95efe6c4`。与前一轮相比，模型服务设置、用例摘要和回放摘要匹配，系统提示词经历了上述修订。这两轮早于系统提示词和工具定义的摘要入库。本轮 3 条结果均已入库并可评分。工具选择、参数合法率和 **3 轮内恢复率均为 2/3（66.7%）**，平均输入 11,671.0 token，修正阶段平均耗时 12,431.7 ms。
+
+| 用例 | 入库结果 | 修正次数 | 输入 token | 修正阶段耗时（ms） |
+| --- | --- | ---: | ---: | ---: |
+| H01 | `invalid_args` | 3 | 18,443 | 21,666 |
+| H02 | 通过 | 1 | 5,607 | 4,815 |
+| H03 | 通过 | 2 | 10,963 | 10,814 |
+
+H01 的预置脚本成功读取 `candidates` 并触发预期的列名错误。模型随后两次调用漏传 `dataset_ids`，分别得到文件不存在和输入目录为空的结果。模型又调用 `export_properties` 生成了派生数据集，第三次沙盒执行得到了正确的统计值和直方图。评分要求直接使用原始 `candidates`，额外导出和三个沙盒请求的参数都偏离了用例路径。该例的 trace ID 为 `6d3d361e8867e4b116f414e34f144b6d`。
+
+根据这轮 H01 的失败，`run_python` 明确每次调用使用新容器，并将 `dataset_ids` 改为必填。诊断和修正调用都须传入脚本读取的 CSV ID。缺参会在启动容器前返回校验错误，因此不会增加实际修正执行次数。 [工具定义](../sandbox/tool.py) · [参数定义](../sandbox/models.py)
+
+### Task 6 基础用例回归
+
+使用与 v2 相同的模型和评测配置。默认目录包含 12 条基础用例。对比使用 v2 第二轮作为基准，并校验两轮的用例和回放摘要。输入复跑完成后打印的 run ID。
+
+```sh
+uv run --no-sync python -m eval.run --tag v3-baseline &&
+  printf 'v3 run_id ' &&
+  IFS= read -r task6_v3_run_id &&
+  uv run --no-sync python -m eval.compare \
+    84dfc269-4256-45fd-8c81-de7c5ec198b9 "$task6_v3_run_id"
+```
+
+逐例检查成功状态和输入 token 差值。S01 应使用 `compute_properties`，S02 应使用 `filter_druglike`。如遇工具选择失败，查看该例的 `error_detail` 或 trace。
+
+2026-11-26 完成两轮开发期基础回归，均早于 `dataset_ids` 必填修订。首次在 `3ebab3f` 的 Task 6 工作区运行，`git_dirty=true`，运行 ID 为 `d650cd8f-8413-44ab-abf5-683d115c2910`。提示词修订后复跑的运行 ID 为 `de5ceede-b02f-4875-96ae-86a10bc09e63`。两轮与 v2 第二轮的模型、端点、温度、thinking、调用上限、judge 配置及用例与回放摘要一致。
+
+| 指标 | v2 第 2 轮 | v3 初次回归 | v3 提示词修订后 |
+| --- | ---: | ---: | ---: |
+| 计划数 / 已入库数 / 可评分数 | 12 / 12 / 12 | 12 / 12 / 12 | 12 / 12 / 12 |
+| 回放未命中 / 缺 token | 0 / 0 | 0 / 0 | 0 / 0 |
+| 工具选择准确率 | 100% | 100% | 100% |
+| 参数合法率 | 100% | 100% | 100% |
+| 任务成功率 | 12/12（100%） | 11/12（91.7%） | 12/12（100%） |
+| 平均输入 token | 5,723.0 | 6,992.8 | 7,046.0 |
+| 平均端到端耗时（ms） | 6,924.1 | 6,874.1 | 5,377.6 |
+
+检查点确认初次回归与 v2 每例的 Agent 模型调用次数相同。初次回归每例首个调用多 586 个输入 token，平均每例增加 1,269.8 个（22.2%）。提示词修订后复跑，平均每例比 v2 增加 1,323.0 个（23.1%）。两次回归的 S01 均使用 `compute_properties`，S02 均使用 `filter_druglike`，两例均通过。
+
+初次回归唯一失败是 E01（`rule_failed`，trace ID `164483ff6dee5759d298ee4fbb2c7891`）。`compute_properties` 返回两条正确分子量与一条 `invalid_smiles`。最终答复先按顺序给出三行表格，随后在说明中逐条复述同一批输入。E01 要求每条输入只列一行，实际六次标识匹配触发 `answer_sequence`。
+
+根据 E01 的失败，系统提示词增加了每条输入只列一次的格式要求，并将报告被排除行的说明放在性质导出场景下。复跑时，E01 在三行内分别给出 CCO 的 46.069 Da、`not-a-smiles` 的解析错误和 CC 的 30.07 Da。原规则通过，trace ID 为 `15e6eed89432c1a8c2924dca42e3786e`。上表的 12/12 是包含该调试用例的基础集回归结果。
+
+### Task 6 提交后正式评测
+
+从包含本次修改的提交在干净工作区复跑。基础与自愈用例各跑两轮，每轮保存 run ID、Git commit、提示词和工具定义摘要及汇总表。上述开发期数据保留用于解释规则和提示词的调整。
+
+```sh
+git status --short
+git rev-parse HEAD
+
+uv run --no-sync python -m eval.run --tag v3 &&
+  uv run --no-sync python -m eval.run --tag v3
+
+uv run --no-sync python -m eval.run --tag v3-self-healing --cases eval/cases_self_healing &&
+  uv run --no-sync python -m eval.run --tag v3-self-healing --cases eval/cases_self_healing
+```
 
 ## 打开 Langfuse trace
 

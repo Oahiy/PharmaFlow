@@ -18,7 +18,7 @@ from pydantic import (
     model_validator,
 )
 
-from mcp_servers.chem.models import DruglikeInput, MoleculeInput
+from mcp_servers.chem.models import DruglikeInput, ExportPropertiesInput, MoleculeInput
 from mcp_servers.lit.models import (
     LabelSectionInput,
     NonBlank,
@@ -26,6 +26,7 @@ from mcp_servers.lit.models import (
     TrialAdverseEventsInput,
     TrialSearchInput,
 )
+from sandbox.models import RUN_PYTHON, RunPythonRequest, SandboxDatasets
 
 from .digests import content_digest
 from .results import Category
@@ -35,11 +36,13 @@ Name = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")]
 FieldPath = Annotated[str, StringConstraints(pattern=r"^\w+(\.\w+)*$|^$")]
 ToolName = Literal[
     "compute_properties",
+    "export_properties",
     "filter_druglike",
     "search_pubmed",
     "search_trials",
     "get_trial_adverse_events",
     "get_label_section",
+    "run_python",
 ]
 ExpectedError = Literal["invalid_nct_format"]
 LIT_TOOLS = frozenset(
@@ -47,11 +50,13 @@ LIT_TOOLS = frozenset(
 )
 REQUEST_MODELS: dict[ToolName, type[BaseModel]] = {
     "compute_properties": MoleculeInput,
+    "export_properties": ExportPropertiesInput,
     "filter_druglike": DruglikeInput,
     "search_pubmed": PubMedSearchInput,
     "search_trials": TrialSearchInput,
     "get_trial_adverse_events": TrialAdverseEventsInput,
     "get_label_section": LabelSectionInput,
+    RUN_PYTHON: RunPythonRequest,
 }
 
 
@@ -77,7 +82,11 @@ class InvalidNctRequest(TrialAdverseEventsInput):
 def normalize_request(
     tool: ToolName, request: dict[str, JsonValue], expected_error: ExpectedError | None
 ) -> dict[str, JsonValue]:
-    request_type = REQUEST_MODELS[tool] if expected_error is None else InvalidNctRequest
+    request_type = (
+        InvalidNctRequest
+        if expected_error == "invalid_nct_format"
+        else REQUEST_MODELS[tool]
+    )
     values = request_type.model_validate(request).model_dump(mode="json")
     if tool == "get_label_section":
         values["drug"] = values["drug"].casefold()
@@ -85,6 +94,14 @@ def normalize_request(
     if tool == "get_trial_adverse_events" and values["term"] is not None:
         values["term"] = values["term"].casefold()
     return values
+
+
+def normalize_expected_request(
+    tool: ToolName, request: dict[str, JsonValue], expected_error: ExpectedError | None
+) -> dict[str, JsonValue]:
+    if tool == RUN_PYTHON:
+        return SandboxDatasets.model_validate(request).model_dump(mode="json")
+    return normalize_request(tool, request, expected_error)
 
 
 class ResultReference(CaseModel):
@@ -99,17 +116,23 @@ class ExpectedCall(CaseModel):
     after: list[Name] = Field(default_factory=list)
     from_results: dict[str, ResultReference] = Field(default_factory=dict)
     expected_error: ExpectedError | None = None
+    allow_repairable_failure: bool = False
     _normalized_request: dict[str, JsonValue] = PrivateAttr()
 
     @model_validator(mode="after")
     def validate_request(self) -> Self:
-        if self.expected_error is not None and self.tool != "get_trial_adverse_events":
+        if (
+            self.expected_error == "invalid_nct_format"
+            and self.tool != "get_trial_adverse_events"
+        ):
             raise ValueError("invalid_nct_format 只适用于 get_trial_adverse_events。")
+        if self.allow_repairable_failure and self.tool != RUN_PYTHON:
+            raise ValueError("allow_repairable_failure 只适用于 run_python。")
         for field in self.from_results:
             if field not in self.request:
                 raise ValueError(f"引用字段 {field} 需要在 request 中声明预检值。")
         # Keep the original values for replay preflight. Normalize only when comparing.
-        self._normalized_request = normalize_request(
+        self._normalized_request = normalize_expected_request(
             self.tool, self.request, self.expected_error
         )
         return self
@@ -154,7 +177,7 @@ class ToolNumber(ToolField, NumberRange):
     type: Literal["tool_number"]
 
 
-class AnswerPattern(CaseModel):
+class RegexPattern(CaseModel):
     pattern: NonBlank
 
     @field_validator("pattern")
@@ -167,12 +190,12 @@ class AnswerPattern(CaseModel):
         return pattern
 
 
-class AnswerRegex(AnswerPattern):
+class AnswerRegex(RegexPattern):
     type: Literal["answer_regex"]
     absent: bool = False
 
 
-class AnswerNumber(AnswerPattern, NumberRange):
+class AnswerNumber(RegexPattern, NumberRange):
     type: Literal["answer_number"]
 
     @model_validator(mode="after")
@@ -182,14 +205,27 @@ class AnswerNumber(AnswerPattern, NumberRange):
         return self
 
 
-class AnswerSequence(AnswerPattern):
-    type: Literal["answer_sequence"]
+class SequencePattern(RegexPattern):
     values: list[NonBlank] = Field(min_length=1)
     allow_trailing: bool = False
 
 
+class AnswerSequence(SequencePattern):
+    type: Literal["answer_sequence"]
+
+
+class ToolSequence(ToolField, SequencePattern):
+    type: Literal["tool_sequence"]
+
+
 Check = Annotated[
-    ToolMatches | ToolCount | ToolNumber | AnswerRegex | AnswerNumber | AnswerSequence,
+    ToolMatches
+    | ToolCount
+    | ToolNumber
+    | ToolSequence
+    | AnswerRegex
+    | AnswerNumber
+    | AnswerSequence,
     Field(discriminator="type"),
 ]
 
@@ -205,6 +241,11 @@ class JudgeSpec(CaseModel):
     threshold: int = Field(ge=0, le=3)
 
 
+class InitialFailure(CaseModel):
+    kind: Literal["code", "timeout", "oom"]
+    stderr_contains: NonBlank | None = None
+
+
 class EvalCase(CaseModel):
     id: Name
     category: Category
@@ -212,9 +253,39 @@ class EvalCase(CaseModel):
     accepted_paths: list[list[ExpectedCall]] = Field(min_length=1)
     checks: list[Check] = Field(min_length=1)
     judge: JudgeSpec | None = None
+    initial_export_properties: ExportPropertiesInput | None = None
+    initial_run_python: RunPythonRequest | None = None
+    initial_failure: InitialFailure | None = None
+
+    def bind_property_export(self, dataset_id: str) -> Self:
+        """Resolve the fixture's exported_properties ID in the seed and scoring rules."""
+        spec = self.model_dump()
+        requests = [spec["initial_run_python"]]
+        requests.extend(
+            step["request"]
+            for path in spec["accepted_paths"]
+            for step in path
+            if step["tool"] == RUN_PYTHON
+        )
+        for request in requests:
+            request["dataset_ids"] = [
+                dataset_id if name == "exported_properties" else name
+                for name in request["dataset_ids"]
+            ]
+        # Recompute normalized expected arguments for this concrete case only.
+        return type(self).model_validate(spec)
 
     @model_validator(mode="after")
     def validate_paths(self) -> Self:
+        if (self.category == "self_healing") != (self.initial_run_python is not None):
+            raise ValueError("仅 self_healing 用例须提供 initial_run_python。")
+        if (self.initial_run_python is None) != (self.initial_failure is None):
+            raise ValueError("预置脚本和预期的初始失败须同时声明。")
+        if (
+            self.initial_export_properties is not None
+            and self.initial_run_python is None
+        ):
+            raise ValueError("预置性质导出需要后续的沙盒脚本。")
         for path in self.accepted_paths:
             seen: set[str] = set()
             for step in path:

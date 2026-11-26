@@ -2,15 +2,17 @@
 
 import argparse
 import asyncio
+from pathlib import Path
 from uuid import UUID
 
 from agent.config import AgentSettings, DatabaseSettings, load_environment
 
 
-async def evaluate(tag: str) -> None:
+async def evaluate(tag: str, *, case_directory: Path | None = None) -> None:
     from agent.llm import create_llm
     from agent.tracing import langfuse_callback, open_langfuse
 
+    from .cases import CASE_DIRECTORY
     from .judge import build_judge
     from .report import print_summary
     from .runner import MODEL_SERVICE_ERRORS, redact_text, run_suite, secret_values
@@ -24,6 +26,9 @@ async def evaluate(tag: str) -> None:
                 model=create_llm(settings.llm),
                 judge=build_judge(create_llm(settings.llm)),
                 callback_factory=langfuse_callback,
+                case_directory=CASE_DIRECTORY
+                if case_directory is None
+                else case_directory,
             )
         except MODEL_SERVICE_ERRORS as exc:
             detail = redact_text(str(exc), secret_values(settings))
@@ -57,7 +62,10 @@ def main() -> None:
     mode.add_argument(
         "--summary", type=UUID, metavar="RUN_ID", help="查询已入库的运行汇总。"
     )
+    parser.add_argument("--cases", type=Path, help="指定独立的 YAML 用例目录。")
     options = parser.parse_args()
+    if options.summary is not None and options.cases is not None:
+        parser.error("--cases 仅与 --tag 一起使用。")
     # Set strict checkpoint deserialization before importing LangGraph.
     load_environment()
     if options.summary is not None:
@@ -65,7 +73,7 @@ def main() -> None:
     else:
         if not options.tag.strip():
             parser.error("--tag 不能为空。")
-        asyncio.run(evaluate(options.tag))
+        asyncio.run(evaluate(options.tag, case_directory=options.cases))
 
 
 if __name__ == "__main__":

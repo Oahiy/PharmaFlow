@@ -1,7 +1,8 @@
 """Calculate RDKit molecular descriptors and screen for drug-likeness."""
 
 import csv
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from io import StringIO
 from typing import Literal
 
 from rdkit import Chem
@@ -10,16 +11,19 @@ from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
 
 from .datasets import (
     PROJECT_ROOT,
-    UPLOAD_PREFIX,
-    dataset_path,
+    publish_dataset,
     read_dataset_csv,
+    resolve_dataset,
     upload_directory,
 )
 from .models import (
     DruglikeInput,
     DruglikeMolecule,
     DruglikeResult,
+    ExportPropertiesInput,
+    ExportPropertiesResult,
     InvalidMolecule,
+    InvalidPropertyRow,
     LipinskiProperties,
     MoleculeInput,
     MoleculeProperties,
@@ -28,35 +32,44 @@ from .models import (
 )
 
 _DATA_DIR = PROJECT_ROOT / "data"
+_PROPERTY_COLUMNS = [
+    name
+    for name in MoleculeProperties.model_fields
+    if name not in MoleculeRecord.model_fields
+]
 _catalog_params = FilterCatalogParams()
 _catalog_params.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS)
 _PAINS_CATALOG = FilterCatalog(_catalog_params)
 
 
-def _load_dataset(dataset_id: str) -> list[MoleculeRecord]:
-    directory = (
-        upload_directory() if dataset_id.startswith(UPLOAD_PREFIX) else _DATA_DIR
-    )
-    path = dataset_path(directory, dataset_id)
+def _load_dataset(dataset_id: str) -> tuple[list[str], list[dict[str, str]]]:
+    path = resolve_dataset(dataset_id, _DATA_DIR)
     try:
         with path.open(encoding="utf-8-sig", newline="") as source:
-            _, records = read_dataset_csv(source, dataset_id)
-            return records
+            return read_dataset_csv(source, dataset_id)
     except FileNotFoundError as exc:
         raise ValueError(f"Unknown dataset ID: {dataset_id}") from exc
     except (OSError, UnicodeError, csv.Error) as exc:
         raise ValueError(f"Could not read CSV dataset {dataset_id}: {exc}") from exc
 
 
-def _molecules(
-    request: MoleculeInput,
-) -> Iterator[tuple[MoleculeRecord, Chem.Mol | None]]:
-    if request.dataset_id is not None:
-        records = _load_dataset(request.dataset_id)
-    else:
-        assert request.smiles is not None
-        records = [MoleculeRecord(smiles=smiles) for smiles in request.smiles]
+def _record_from_row(row: dict[str, str]) -> MoleculeRecord:
+    return MoleculeRecord(
+        smiles=row["smiles"], molecule_chembl_id=row.get("molecule_chembl_id") or None
+    )
 
+
+def _records(request: MoleculeInput) -> Iterable[MoleculeRecord]:
+    if request.dataset_id is not None:
+        _, rows = _load_dataset(request.dataset_id)
+        return (_record_from_row(row) for row in rows)
+    assert request.smiles is not None
+    return (MoleculeRecord(smiles=smiles) for smiles in request.smiles)
+
+
+def _molecules(
+    records: Iterable[MoleculeRecord],
+) -> Iterator[tuple[MoleculeRecord, Chem.Mol | None]]:
     params = Chem.SmilesParserParams()
     params.parseName = False
     for record in records:
@@ -78,6 +91,15 @@ def _lipinski_properties(mol: Chem.Mol) -> LipinskiProperties:
     )
 
 
+def _properties(record: MoleculeRecord, mol: Chem.Mol) -> MoleculeProperties:
+    return MoleculeProperties(
+        **record.model_dump(),
+        tpsa=rdMolDescriptors.CalcTPSA(mol),
+        qed=QED.qed(mol),
+        **_lipinski_properties(mol).model_dump(),
+    )
+
+
 def compute_properties(request: MoleculeInput) -> PropertiesResult:
     """Calculate RDKit molecular descriptors for a batch.
 
@@ -91,20 +113,60 @@ def compute_properties(request: MoleculeInput) -> PropertiesResult:
         Invalid SMILES have an error entry at the corresponding input position.
     """
     results: list[MoleculeProperties | InvalidMolecule] = []
-    for record, mol in _molecules(request):
+    for record, mol in _molecules(_records(request)):
         if mol is None:
             results.append(InvalidMolecule(**record.model_dump()))
             continue
 
-        results.append(
-            MoleculeProperties(
-                **record.model_dump(),
-                tpsa=rdMolDescriptors.CalcTPSA(mol),
-                qed=QED.qed(mol),
-                **_lipinski_properties(mol).model_dump(),
-            )
-        )
+        results.append(_properties(record, mol))
     return PropertiesResult(results=results)
+
+
+def export_properties(request: ExportPropertiesInput) -> ExportPropertiesResult:
+    """Export RDKit properties for later sorting, statistics, and plotting with run_python.
+
+    Args:
+        request: The ID of a CSV dataset containing a smiles column. Original
+            columns are preserved and must not conflict with the property names.
+
+    Returns:
+        The new dataset ID, columns including mw, logp, hbd, hba, tpsa and qed,
+        the valid row count, and the 1-based data rows excluded for invalid SMILES.
+        If there are no valid rows, the dataset ID is null and no CSV is created.
+    """
+    columns, rows = _load_dataset(request.dataset_id)
+    conflicts = sorted(set(columns).intersection(_PROPERTY_COLUMNS))
+    if conflicts:
+        raise ValueError(
+            f"Dataset {request.dataset_id}: existing property columns: {', '.join(conflicts)}"
+        )
+
+    columns.extend(_PROPERTY_COLUMNS)
+    invalid_rows: list[InvalidPropertyRow] = []
+    with StringIO(newline="") as output:
+        writer = csv.DictWriter(output, fieldnames=columns)
+        writer.writeheader()
+        molecules = _molecules(_record_from_row(row) for row in rows)
+        for position, (row, (record, mol)) in enumerate(
+            zip(rows, molecules, strict=True), 1
+        ):
+            if mol is None:
+                invalid_rows.append(InvalidPropertyRow(row=position))
+                continue
+            values = _properties(record, mol).model_dump(include=set(_PROPERTY_COLUMNS))
+            writer.writerow({**row, **values})
+        row_count = len(rows) - len(invalid_rows)
+        dataset_id = (
+            publish_dataset(upload_directory(), output.getvalue().encode("utf-8"))
+            if row_count
+            else None
+        )
+    return ExportPropertiesResult(
+        dataset_id=dataset_id,
+        columns=columns,
+        row_count=row_count,
+        invalid_rows=invalid_rows,
+    )
 
 
 def filter_druglike(request: DruglikeInput) -> DruglikeResult:
@@ -123,7 +185,7 @@ def filter_druglike(request: DruglikeInput) -> DruglikeResult:
     """
     thresholds = request.thresholds
     results: list[DruglikeMolecule | InvalidMolecule] = []
-    for record, mol in _molecules(request):
+    for record, mol in _molecules(_records(request)):
         if mol is None:
             results.append(InvalidMolecule(**record.model_dump()))
             continue

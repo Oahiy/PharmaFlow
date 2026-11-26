@@ -13,6 +13,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.schema import StreamEvent
 from starlette.types import Receive, Scope, Send
 
+from sandbox.tool import sandbox_worker_scope
+
 from .schemas import (
     Done,
     InvalidToolCallEvent,
@@ -22,6 +24,7 @@ from .schemas import (
     Token,
     ToolCallEvent,
     ToolResult,
+    tool_artifacts,
 )
 
 if TYPE_CHECKING:
@@ -45,7 +48,7 @@ class RunResponse(StreamingResponse):
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         # A disconnect during send() leaves the generator suspended at yield.
         # Stop the graph before the request-scoped database lock is released.
-        async with aclosing(self.frames):
+        async with sandbox_worker_scope(), aclosing(self.frames):
             await super().__call__(scope, receive, send)
 
 
@@ -73,6 +76,7 @@ def tool_result(message: ToolMessage, name: str | None) -> ToolResult:
         tool_name=name,
         tool_call_id=message.tool_call_id,
         status=message.status,
+        files=tool_artifacts(message),
         output=content
         if isinstance(content, str)
         else json.dumps(content, ensure_ascii=False),

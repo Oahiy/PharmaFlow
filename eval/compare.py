@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID
 
@@ -13,10 +14,21 @@ from agent.config import DatabaseSettings, load_environment
 from .report import print_table
 from .storage import has_full_coverage, run_coverage
 
+MODEL_INPUT_DIGESTS = {
+    "system_prompt_sha256": "系统提示词",
+    "tool_schema_sha256": "工具定义",
+}
+
+
+@dataclass(frozen=True)
+class Comparison:
+    rows: list[DictRow]
+    model_input_matches: dict[str, bool | None]
+
 
 async def read_comparison(
     conn: AsyncConnection[DictRow], first_id: UUID, second_id: UUID
-) -> list[DictRow]:
+) -> Comparison:
     first = await run_coverage(conn, first_id)
     second = await run_coverage(conn, second_id)
     for run_id, run in ((first_id, first), (second_id, second)):
@@ -26,17 +38,25 @@ async def read_comparison(
                 f"计划 {run['planned_count']}，已入库 {run['stored_count']}，"
                 f"匹配 {run['matched_count']}。"
             )
+    first_config, second_config = first["config"], second["config"]
     differences = [
         field
         for field in ("cases_sha256", "recordings_sha256")
-        if first["config"][field] != second["config"][field]
+        if first_config[field] != second_config[field]
     ]
     if differences:
         raise ValueError(
             f"运行 {first_id} 与 {second_id} 的摘要不一致（{', '.join(differences)}）。"
         )
+    model_input_matches: dict[str, bool | None] = {}
+    for field in MODEL_INPUT_DIGESTS:
+        before, after = first_config.get(field), second_config.get(field)
+        model_input_matches[field] = (
+            before == after if before is not None and after is not None else None
+        )
     sql = Path(__file__).with_suffix(".sql").read_text(encoding="utf-8")
-    return await (await conn.execute(sql, (first_id, second_id))).fetchall()
+    rows = await (await conn.execute(sql, (first_id, second_id))).fetchall()
+    return Comparison(rows=rows, model_input_matches=model_input_matches)
 
 
 COLUMNS = {
@@ -66,10 +86,18 @@ async def compare(first_id: UUID, second_id: UUID) -> None:
         open_connection_pool(settings.database_url.get_secret_value()) as pool,
         pool.connection() as conn,
     ):
-        rows = await read_comparison(conn, first_id, second_id)
+        comparison = await read_comparison(conn, first_id, second_id)
     print(f"第 1 轮 {first_id}\n第 2 轮 {second_id}")
+    statuses = {True: "一致", False: "不同", None: "缺少记录"}
+    print(
+        "，".join(
+            f"{label}摘要 {statuses[comparison.model_input_matches[field]]}"
+            for field, label in MODEL_INPUT_DIGESTS.items()
+        )
+    )
     print_table(
-        tuple(COLUMNS.values()), (tuple(row[key] for key in COLUMNS) for row in rows)
+        tuple(COLUMNS.values()),
+        (tuple(row[key] for key in COLUMNS) for row in comparison.rows),
     )
 
 

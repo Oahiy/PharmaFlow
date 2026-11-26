@@ -1,0 +1,62 @@
+id: H03
+category: self_healing
+question: >-
+  使用 export_properties 对 candidates 导出的数据集，按 qed 降序取前 10，
+  同分按 molecule_chembl_id 升序。用 run_python 逐行打印 ChEMBL ID、空格和四位小数的 QED，
+  并保存这 10 个分子的 MW（横轴）与 LogP（纵轴）散点图为 /work/output/mw-logp.png。
+  最终回答按排名列出这 10 个 ID。
+initial_export_properties: {dataset_id: candidates}
+initial_failure: {kind: code, stderr_contains: "KeyError: 'QED'"}
+initial_run_python:
+  dataset_ids: [exported_properties]
+  code: |
+    from pathlib import Path
+    import pandas as pd
+
+    csv_path, = Path("/work/input").glob("*.csv")
+    data = pd.read_csv(csv_path)
+    print(data["QED"].nlargest(10))
+accepted_paths:
+  - - id: repair
+      tool: run_python
+      request: &derived_data {dataset_ids: [exported_properties]}
+  - - &first_attempt
+      id: first_attempt
+      tool: run_python
+      request: *derived_data
+      allow_repairable_failure: true
+    - id: repair
+      tool: run_python
+      request: *derived_data
+      after: [first_attempt]
+  - - *first_attempt
+    - id: second_attempt
+      tool: run_python
+      request: *derived_data
+      allow_repairable_failure: true
+      after: [first_attempt]
+    - id: repair
+      tool: run_python
+      request: *derived_data
+      after: [second_attempt]
+checks:
+  - type: tool_sequence
+    step: repair
+    path: stdout
+    pattern: '(?m)^[ \t]*CHEMBL[0-9]+[^\r\n]*'
+    values:
+      - CHEMBL5397175 0.7868
+      - CHEMBL5439404 0.7822
+      - CHEMBL5434277 0.7817
+      - CHEMBL5423732 0.7544
+      - CHEMBL5411433 0.7526
+      - CHEMBL5436538 0.7306
+      - CHEMBL5425389 0.7196
+      - CHEMBL5431716 0.7020
+      - CHEMBL5399669 0.6861
+      - CHEMBL5417255 0.6382
+  - {type: tool_count, step: repair, path: files, count: 1}
+  - {type: tool_matches, step: repair, path: files.0, value: {filename: mw-logp.png, media_type: image/png}}
+  - type: answer_sequence
+    pattern: 'CHEMBL[0-9]+'
+    values: [CHEMBL5397175, CHEMBL5439404, CHEMBL5434277, CHEMBL5423732, CHEMBL5411433, CHEMBL5436538, CHEMBL5425389, CHEMBL5431716, CHEMBL5399669, CHEMBL5417255]

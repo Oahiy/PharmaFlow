@@ -7,11 +7,13 @@ from typing import TYPE_CHECKING, Annotated
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
 from langgraph.constants import START
 from psycopg import AsyncConnection
 from starlette.concurrency import run_in_threadpool
 
 from agent.config import AgentSettings, api_revision, load_environment
+from sandbox.artifacts import find_artifact
 
 from .schemas import (
     RunRequest,
@@ -36,6 +38,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from agent.mcp_client import lit_env_from_process, open_mcp_tools
     from agent.persistence import open_connection_pool, setup_checkpointer
     from agent.tracing import langfuse_turn_trace, open_langfuse
+    from sandbox.tool import create_run_python_tool
 
     async with open_langfuse(required=False) as langfuse:
         app.state.trace_for_thread = None
@@ -54,7 +57,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             checkpointer = await setup_checkpointer(pool)
             async with open_mcp_tools(lit_env=lit_env_from_process()) as tools:
                 app.state.graph = build_graph(
-                    create_llm(settings.llm), tools, checkpointer
+                    create_llm(settings.llm),
+                    [*tools, create_run_python_tool()],
+                    checkpointer,
                 )
                 yield
 
@@ -138,6 +143,18 @@ async def get_thread(thread_id: UUID, graph: GraphDependency) -> ThreadState:
         messages=[
             serialize_message(message) for message in snapshot.values["messages"]
         ],
+    )
+
+
+@router.get("/threads/{thread_id}/artifacts/{artifact_id}", response_class=FileResponse)
+def get_artifact(thread_id: UUID, artifact_id: UUID) -> FileResponse:
+    path = find_artifact(thread_id, artifact_id)
+    if path is None:
+        raise HTTPException(404, "此会话没有该图表。")
+    return FileResponse(
+        path,
+        media_type="image/png",
+        headers={"X-Content-Type-Options": "nosniff"},
     )
 
 

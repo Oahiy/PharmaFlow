@@ -111,6 +111,24 @@ def test_invalid_smiles_is_a_successful_row_and_answer_affects_scoring(cases):
     assert result.failure_type == "rule_failed"
     assert result.error_detail["rules"]
 
+    result = score_case(
+        case,
+        [
+            *messages,
+            AIMessage(
+                content=(
+                    "| CCO | 46.069 Da |\n| not-a-smiles | 无法解析 |\n| CC | 30.07 Da |"
+                    "\n\n说明\n- **CCO** 为 46.069 Da。"
+                    "\n- **not-a-smiles** 无法解析。"
+                    "\n- **CC** 为 30.07 Da。"
+                ),
+            ),
+        ],
+    )
+    assert result.failure_type == "rule_failed"
+    (failed_rule,) = result.error_detail["rules"]
+    assert failed_rule["rule"]["type"] == "answer_sequence"
+
 
 @pytest.mark.parametrize("uses_tool", [False, True])
 def test_nct_format_accepts_both_declared_paths(cases, uses_tool):

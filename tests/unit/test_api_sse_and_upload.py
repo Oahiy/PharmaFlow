@@ -1,9 +1,11 @@
 import asyncio
 import json
+from threading import Event
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from docker.errors import ImageNotFound
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
@@ -25,6 +27,10 @@ from api.streaming import stream_run
 from api.uploads import UploadSettings
 from mcp_servers.chem.models import MoleculeInput
 from mcp_servers.chem.tools import compute_properties
+from sandbox import artifacts
+from sandbox.executor import PythonExecution
+from sandbox.models import RunPythonResult, SandboxError
+from sandbox.tool import create_run_python_tool
 
 
 @tool
@@ -105,6 +111,186 @@ def events(response: httpx.Response):
         assert name in {"node", "tool_call", "tool_result", "token", "done", "error"}
         result.append((name, json.loads(data.removeprefix("data: "))))
     return result
+
+
+async def test_sandbox_repairs_then_serves_png_live_and_from_checkpoint(
+    client, fake_chat_model, python_call, monkeypatch, tmp_path, png_bytes
+):
+    monkeypatch.setattr(artifacts, "ARTIFACTS_DIR", tmp_path / "sandbox_artifacts")
+    requests = []
+
+    def execute(request, call_id):
+        requests.append(request)
+        if call_id == "initial":
+            return PythonExecution(
+                "",
+                "Traceback (most recent call last):\nKeyError: 'QED'\n",
+                1,
+                SandboxError(kind="code", message="检查列名。"),
+            )
+        return PythonExecution("sorted\n", "", 0, files={"plot.png": png_bytes})
+
+    model = fake_chat_model(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[python_call("initial", "data['QED']", ["upload_demo"])],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[python_call("fixed", "data['qed']", ["upload_demo"])],
+            ),
+            AIMessage(content="已生成图表。"),
+        ]
+    )
+    graph = build_graph(model, [create_run_python_tool(execute)], InMemorySaver())
+    monkeypatch.setitem(app.dependency_overrides, get_agent_graph, lambda: graph)
+    thread = uuid4()
+    url = f"/api/threads/{thread}"
+    trace = events(await client.post(url + "/runs", json={"message": "画散点图"}))
+    calls = [data for kind, data in trace if kind == "tool_call"]
+    assert [call["args"]["request"]["code"] for call in calls] == [
+        "data['QED']",
+        "data['qed']",
+    ]
+    assert [req.dataset_ids for req in requests] == [["upload_demo"], ["upload_demo"]]
+    first, fixed = (data for kind, data in trace if kind == "tool_result")
+    assert first["tool_call_id"] == "initial" and first["status"] == "error"
+    assert (
+        "KeyError: 'QED'" in RunPythonResult.model_validate_json(first["output"]).stderr
+    )
+    assert model.received[1][-1].status == "error"
+    assert "KeyError" in model.received[1][-1].text
+    assert fixed["tool_call_id"] == "fixed" and fixed["status"] == "success"
+    (file,) = fixed["files"]
+    artifact_id = UUID(file["artifact_id"])
+    assert json.loads(fixed["output"])["files"] == [
+        {
+            "filename": "plot.png",
+            "size_bytes": len(png_bytes),
+            "media_type": "image/png",
+        }
+    ]
+    assert trace[-1] == (
+        "done",
+        {"thread_id": str(thread), "final_response": "已生成图表。"},
+    )
+    history = (await client.get(url)).raise_for_status().json()["messages"]
+    (saved,) = [
+        message for message in history if message.get("tool_call_id") == "fixed"
+    ]
+    assert saved["files"] == fixed["files"]
+    png = await client.get(f"{url}/artifacts/{artifact_id}")
+    assert png.raise_for_status().headers["content-type"] == "image/png"
+    assert png.content == png_bytes
+    assert (
+        await client.get(f"/api/threads/{uuid4()}/artifacts/{artifact_id}")
+    ).status_code == 404
+    assert (await client.get(f"{url}/artifacts/not-a-uuid")).status_code == 422
+    (batch,) = list((artifacts.ARTIFACTS_DIR / str(thread)).iterdir())
+    assert not batch.name.startswith(".")
+    assert [child.name for child in batch.iterdir()] == [f"{artifact_id}.png"]
+
+
+async def test_sandbox_infrastructure_failure_ends_sse(
+    client, fake_chat_model, python_call, monkeypatch
+):
+    def execute(request, call_id):
+        raise ImageNotFound("pharmaflow-sandbox:1")
+
+    model = fake_chat_model(
+        responses=[
+            AIMessage(content="", tool_calls=[python_call("run", "print(1)")]),
+        ]
+    )
+    graph = build_graph(model, [create_run_python_tool(execute)], InMemorySaver())
+    monkeypatch.setitem(app.dependency_overrides, get_agent_graph, lambda: graph)
+    trace = events(
+        await client.post(f"/api/threads/{uuid4()}/runs", json={"message": "执行"})
+    )
+    assert trace[-1] == ("error", {"detail": "ImageNotFound: pharmaflow-sandbox:1"})
+    assert not any(kind == "tool_result" for kind, _ in trace)
+    assert len(model.received) == 1
+
+
+@pytest.mark.parametrize("during_send", [False, True])
+async def test_sandbox_sse_disconnect_waits_for_worker_cleanup(
+    client, fake_chat_model, python_call, monkeypatch, during_send
+):
+    loop = asyncio.get_running_loop()
+    started, disconnected, sending_tool_node, unlocked = (
+        asyncio.Event() for _ in range(4)
+    )
+    release, cleaned = Event(), Event()
+
+    def execute(request, call_id):
+        loop.call_soon_threadsafe(started.set)
+        try:
+            assert release.wait(5), "test never released the worker"
+            return PythonExecution("", "", 0)
+        finally:
+            cleaned.set()
+
+    async def lock():
+        try:
+            yield
+        finally:
+            unlocked.set()
+
+    model = fake_chat_model(
+        responses=[
+            AIMessage(content="", tool_calls=[python_call("run", "pass")]),
+            AIMessage(content="完成"),
+        ]
+    )
+    graph = build_graph(model, [create_run_python_tool(execute)], InMemorySaver())
+    monkeypatch.setitem(app.dependency_overrides, get_agent_graph, lambda: graph)
+    monkeypatch.setitem(app.dependency_overrides, claim_thread, lock)
+    url = f"/api/threads/{uuid4()}"
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "path": url + "/runs",
+        "scheme": "http",
+        "query_string": b"",
+        "headers": [(b"content-type", b"application/json")],
+    }
+    first = True
+
+    async def receive():
+        nonlocal first
+        if first:
+            first = False
+            return {"type": "http.request", "body": b'{"message":"run"}'}
+        await started.wait()
+        if during_send:
+            await sending_tool_node.wait()
+        disconnected.set()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if (
+            during_send
+            and message["type"] == "http.response.body"
+            and b'{"node":"tools"}' in message["body"]
+        ):
+            sending_tool_node.set()
+            await asyncio.Future()
+
+    async with asyncio.timeout(5):
+        request = asyncio.create_task(app(scope, receive, send))
+        try:
+            await disconnected.wait()
+            assert not (await asyncio.wait({request}, timeout=0.05))[0]
+            assert not unlocked.is_set()
+        finally:
+            release.set()
+            await request
+    assert cleaned.is_set() and unlocked.is_set()
+    state = (await client.get(url)).raise_for_status().json()
+    assert state["next_nodes"] == ["tools"]
 
 
 def test_openapi_describes_sse_conflicts_and_multipart_uploads():

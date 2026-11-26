@@ -120,3 +120,59 @@ async def test_summary_counts_partial_runs_and_null_denominators(database_url):
             assert complete["complete"]
             assert complete["stored_count"] == complete["planned_count"] == 4
             assert complete["success_rate"] == pytest.approx(Decimal(2) / 3)
+
+
+@pytest.mark.parametrize(
+    ("failed_attempts", "failure_type"),
+    [(3, "tool_error"), (4, "repair_budget_exceeded")],
+)
+async def test_self_healing_summary_uses_task_success_and_stores_repair_attempts(
+    database_url, failed_attempts, failure_type
+):
+    run_id, user_id = uuid4(), uuid4()
+    cases = [
+        {"case_id": f"H_{uuid4().hex}", "category": "self_healing"} for _ in range(2)
+    ]
+    async with open_connection_pool(database_url) as pool, pool.connection() as conn:
+        await setup_schema(conn)
+        async with conn.transaction(force_rollback=True):
+            await start_run(
+                conn,
+                run_id=run_id,
+                user_id=user_id,
+                tag="task6",
+                git_commit="abc",
+                config={},
+                cases=cases,
+            )
+            for planned, attempts, failure in zip(
+                cases, (1, failed_attempts), (None, failure_type), strict=True
+            ):
+                await save_result(
+                    conn,
+                    run_id,
+                    CaseResult(
+                        case_id=planned["case_id"],
+                        thread_id=uuid4(),
+                        trace_id=uuid4().hex,
+                        tools_correct=True,
+                        params_valid=True,
+                        input_tokens=None,
+                        elapsed_ms=10,
+                        repair_attempts=attempts,
+                        failure_type=failure,
+                    ),
+                )
+            await finish_run(conn, run_id)
+            cursor = await conn.execute(
+                "SELECT repair_attempts, failure_type FROM eval.results WHERE run_id = %s ORDER BY repair_attempts",
+                (run_id,),
+            )
+            assert await cursor.fetchall() == [
+                {"repair_attempts": 1, "failure_type": None},
+                {"repair_attempts": failed_attempts, "failure_type": failure_type},
+            ]
+            _, category = await read_summary(conn, run_id)
+            assert category["category"] == "self_healing"
+            assert category["scorable_count"] == 2
+            assert category["success_rate"] == Decimal("0.5")

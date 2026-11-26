@@ -77,8 +77,8 @@ async def save_result(
         """
         INSERT INTO eval.results (
             run_id, case_id, thread_id, trace_id, success, tools_correct, params_valid,
-            input_tokens, elapsed_ms, judge_score, failure_type, error_detail
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            input_tokens, elapsed_ms, judge_score, failure_type, error_detail, repair_attempts
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
             run_id,
@@ -93,6 +93,7 @@ async def save_result(
             result.judge_score,
             result.failure_type,
             Jsonb(result.error_detail) if result.error_detail is not None else None,
+            result.repair_attempts,
         ),
     )
 

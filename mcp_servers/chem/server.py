@@ -2,10 +2,11 @@
 
 from fastmcp import FastMCP
 
-from .tools import compute_properties, filter_druglike
+from .tools import compute_properties, export_properties, filter_druglike
 
 mcp = FastMCP("chem-mcp")
 mcp.tool(compute_properties)
+mcp.tool(export_properties)
 mcp.tool(filter_druglike)
 
 

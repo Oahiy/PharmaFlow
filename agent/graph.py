@@ -3,7 +3,14 @@
 from typing import Literal
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
+from langchain_core.messages.tool import ToolCall
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -12,6 +19,9 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command, StateSnapshot
 
+from sandbox.models import MAX_REPAIR_ROUNDS, REPAIR_LIMIT_MESSAGE, RUN_PYTHON
+from sandbox.tool import is_repairable_failure, sandbox_config
+
 from .state import AgentState
 
 SYSTEM_PROMPT = SystemMessage(
@@ -19,9 +29,21 @@ SYSTEM_PROMPT = SystemMessage(
         "你是 PharmaFlow Agent，负责临床安全性证据核查和候选分子的类药性筛选。"
         "使用工具查询证据与计算分子性质，引用实际查到的文献、试验编号或药品说明书。"
         "分子分析使用用户提供的 SMILES 或数据集 ID。项目自带的候选集 ID 为 candidates。"
+        "性质计算、Lipinski 和 PAINS 筛选使用 chem-mcp。自定义排序、统计或画图才使用 run_python。"
+        "需要按分子性质分析 CSV 时，先用 export_properties，再把派生数据集 ID 传给 run_python。"
+        "导出性质时，报告被排除的非法 SMILES 行。派生数据集 ID 为空时结束这项分析。"
+        "脚本读取 /work/input 下的数据，禁止手写 SMILES。图表保存为 /work/output 下的 PNG。"
+        "每条回复最多调用一次 run_python。遇到代码错误，根据 traceback 修正。"
+        "遇到超时或内存超限，缩小计算或数据规模后再提交。"
+        "用户要求每条输入只列一行时，在同一行给出结果或解析错误，每条只列一次。"
     )
 )
 STEP_LIMIT_MESSAGE = "已达到本轮步数上限，跳过这次工具调用。"
+PARALLEL_SANDBOX_MESSAGE = "每条回复只能执行一次 run_python，请等该次执行结束。"
+
+type ToolUpdates = (
+    dict[str, list[ToolMessage]] | list[Command | dict[str, list[ToolMessage]]]
+)
 
 
 def route_after_agent(state: AgentState) -> Literal["tools", "__end__"]:
@@ -48,6 +70,26 @@ def _invalid_tool_results(reply: AIMessage) -> list[ToolMessage]:
             )
         )
     return results
+
+
+def _sandbox_failures_in_turn(messages: list[AnyMessage]) -> int:
+    failures = 0
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            break
+        if isinstance(message, ToolMessage) and is_repairable_failure(message):
+            failures += 1
+    return failures
+
+
+def _append_tool_results(
+    updates: ToolUpdates, results: list[ToolMessage]
+) -> ToolUpdates:
+    if not results:
+        return updates
+    if isinstance(updates, list):
+        return [*updates, {"messages": results}]
+    return {"messages": [*updates["messages"], *results]}
 
 
 def resume_config(
@@ -95,19 +137,58 @@ def build_graph(
             messages.extend(_invalid_tool_results(reply))
         return {"messages": messages, "step_count": step_count}
 
-    async def call_tools(
-        state: AgentState, config: RunnableConfig
-    ) -> dict[str, list[ToolMessage]] | list[Command | dict[str, list[ToolMessage]]]:
+    async def call_tools(state: AgentState, config: RunnableConfig) -> ToolUpdates:
         reply = state["messages"][-1]
         assert isinstance(reply, AIMessage)
-        updates = await tool_node.ainvoke(state, config)
-        if not reply.invalid_tool_calls:
-            return updates
-
         errors = _invalid_tool_results(reply)
-        if isinstance(updates, list):
-            return [*updates, {"messages": errors}]
-        return {"messages": [*updates["messages"], *errors]}
+        if RUN_PYTHON not in tool_node.tools_by_name or not any(
+            call["name"] == RUN_PYTHON for call in reply.tool_calls
+        ):
+            return _append_tool_results(await tool_node.ainvoke(state, config), errors)
+
+        failures = _sandbox_failures_in_turn(state["messages"])
+        sandbox_call = None
+        other_calls = []
+        for call in reply.tool_calls:
+            if call["name"] != RUN_PYTHON:
+                other_calls.append(call)
+                continue
+            if failures > MAX_REPAIR_ROUNDS:
+                reason = REPAIR_LIMIT_MESSAGE
+            elif sandbox_call is not None:
+                reason = PARALLEL_SANDBOX_MESSAGE
+            else:
+                sandbox_call = call
+                continue
+            assert call["id"] is not None
+            errors.append(
+                ToolMessage(
+                    name=RUN_PYTHON,
+                    tool_call_id=call["id"],
+                    status="error",
+                    content=reason,
+                )
+            )
+
+        def select_calls(calls: list[ToolCall]) -> AgentState:
+            selected = reply.model_copy(update={"tool_calls": calls})
+            return {**state, "messages": [*state["messages"][:-1], selected]}
+
+        updates = {"messages": []}
+        if other_calls:
+            updates = await tool_node.ainvoke(select_calls(other_calls), config)
+        if sandbox_call is not None:
+            # A parallel MCP exception must not leave a sandbox worker running
+            # after this graph node and its request-scoped lock exit.
+            assert reply.id is not None
+            sandbox_updates = await tool_node.ainvoke(
+                select_calls([sandbox_call]),
+                sandbox_config(
+                    config, reply.id, final_repair=failures == MAX_REPAIR_ROUNDS
+                ),
+            )
+            updates = _append_tool_results(updates, sandbox_updates["messages"])
+        return _append_tool_results(updates, errors)
 
     graph = StateGraph(AgentState)
     graph.add_node("agent", call_agent)

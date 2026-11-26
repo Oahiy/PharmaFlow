@@ -10,7 +10,15 @@ from eval.storage import finish_run, save_result, setup_schema, start_run
 
 @pytest.mark.parametrize(
     "difference",
-    [None, "cases_sha256", "recordings_sha256", "unfinished", "missing_result"],
+    [
+        None,
+        "cases_sha256",
+        "recordings_sha256",
+        "system_prompt_sha256",
+        "tool_schema_sha256",
+        "unfinished",
+        "missing_result",
+    ],
 )
 async def test_comparison_checks_inputs_and_derives_per_case_deltas(
     database_url, difference
@@ -23,6 +31,7 @@ async def test_comparison_checks_inputs_and_derives_per_case_deltas(
         {"case_id": b, "category": "single_tool"},
     ]
     config = {"cases_sha256": "cases", "recordings_sha256": "recordings"}
+    input_digests = {"system_prompt_sha256": "prompt", "tool_schema_sha256": "tools"}
 
     async with open_connection_pool(database_url) as pool, pool.connection() as conn:
         await setup_schema(conn)
@@ -38,7 +47,11 @@ async def test_comparison_checks_inputs_and_derives_per_case_deltas(
                 ),
             ):
                 run_config = config.copy()
-                if run_id == second_id and difference in config:
+                if difference in input_digests or (
+                    run_id == second_id and difference is None
+                ):
+                    run_config.update(input_digests)
+                if run_id == second_id and difference in run_config:
                     run_config[difference] = "other"
                 await start_run(
                     conn,
@@ -79,7 +92,7 @@ async def test_comparison_checks_inputs_and_derives_per_case_deltas(
                 elif run_id != second_id or difference != "unfinished":
                     await finish_run(conn, run_id)
 
-            if difference is not None:
+            if difference is not None and difference not in input_digests:
                 expected = (
                     difference if difference in config else f"{second_id} 未完整结束"
                 )
@@ -87,7 +100,12 @@ async def test_comparison_checks_inputs_and_derives_per_case_deltas(
                     await read_comparison(conn, first_id, second_id)
                 return
 
-            primary, unscorable = await read_comparison(conn, first_id, second_id)
+            comparison = await read_comparison(conn, first_id, second_id)
+            assert comparison.model_input_matches == {
+                field: None if difference is None else field != difference
+                for field in input_digests
+            }
+            primary, unscorable = comparison.rows
             assert primary == {
                 "case_id": a,
                 "first_success": True,

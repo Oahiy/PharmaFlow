@@ -4,9 +4,9 @@ import csv
 import os
 from collections import Counter
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import TextIO
-
-from .models import MoleculeRecord
+from uuid import uuid4
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 UPLOAD_PREFIX = "upload_"
@@ -26,9 +26,29 @@ def dataset_path(directory: Path, dataset_id: str) -> Path:
     return path
 
 
+def resolve_dataset(
+    dataset_id: str, data_directory: Path = PROJECT_ROOT / "data"
+) -> Path:
+    directory = (
+        upload_directory() if dataset_id.startswith(UPLOAD_PREFIX) else data_directory
+    )
+    return dataset_path(directory, dataset_id)
+
+
+def publish_dataset(directory: Path, payload: bytes) -> str:
+    dataset_id = f"{UPLOAD_PREFIX}{uuid4().hex}"
+    directory.mkdir(parents=True, exist_ok=True)
+    target = dataset_path(directory, dataset_id)
+    with NamedTemporaryFile(dir=directory) as staging:
+        staging.write(payload)
+        staging.flush()
+        os.link(staging.name, target)
+    return dataset_id
+
+
 def read_dataset_csv(
     source: TextIO, label: str, *, max_rows: int | None = None
-) -> tuple[list[str], list[MoleculeRecord]]:
+) -> tuple[list[str], list[dict[str, str]]]:
     reader = csv.DictReader(source, strict=True)
     columns = reader.fieldnames
     if not columns or "smiles" not in columns:
@@ -37,9 +57,9 @@ def read_dataset_csv(
         if count > 1:
             raise ValueError(f"Dataset {label}: duplicate {name} column")
 
-    records = []
+    rows = []
     for row in reader:
-        if max_rows is not None and len(records) == max_rows:
+        if max_rows is not None and len(rows) == max_rows:
             raise ValueError(f"CSV 数据行数超过上限 {max_rows}")
         if None in row:
             raise ValueError(
@@ -52,10 +72,5 @@ def read_dataset_csv(
                 f"Dataset {label}, line {reader.line_num}: "
                 f"missing {', '.join(missing)} (expected {len(columns)} fields)"
             )
-        records.append(
-            MoleculeRecord(
-                smiles=row["smiles"],
-                molecule_chembl_id=row.get("molecule_chembl_id") or None,
-            )
-        )
-    return list(columns), records
+        rows.append(row)
+    return list(columns), rows

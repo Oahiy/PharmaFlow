@@ -24,6 +24,7 @@ dist/
 
 # 运行时数据（录制的 HTTP 响应和 data/candidates.csv 要提交）
 data/uploads/
+data/artifacts/
 
 # 模型缓存
 .cache/

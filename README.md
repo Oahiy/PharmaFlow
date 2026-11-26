@@ -1,0 +1,73 @@
+# PharmaFlow Agent
+
+## 在本地运行 Task 6
+
+在项目根目录安装依赖，启动 Postgres 并构建沙盒镜像。API、CLI 和自愈评测使用本机 Docker daemon 执行脚本。
+
+```sh
+uv sync --locked
+docker compose up -d postgres
+docker build -t pharmaflow-sandbox:1 sandbox
+```
+
+按 `.env.example` 配置模型和数据库。在两个终端分别启动 API 和 Streamlit。 [模型和评测设置](docs/eval.md)
+
+```sh
+uv run uvicorn api.main:app
+uv run streamlit run ui/app.py
+```
+
+每次 `run_python` 使用一个一次性容器，关闭网络，以非 root 用户运行。CPU 配额为 1 核，内存上限为 512 MiB，额外 swap 配额为 0，进程数上限为 64。启动后等待脚本最多 15 秒。CSV 通过 Docker archive API 传入 `/work/input/`，PNG 从 `/work/output/` 取回。每次最多 5 张图，单张最多 5 MiB，合计最多 10 MiB。成功取回的 PNG 存在本地 `data/artifacts/`，会话刷新时按 UUID 取图。
+
+容器可写层共享 Docker Desktop 的磁盘空间，单次脚本运行可能耗尽可用空间。产物大小限制在从容器取回 PNG 时生效。
+
+如果将 API 容器接入宿主机的 `/var/run/docker.sock`，API 将取得足以控制宿主机的 Docker 权限。这个部署方式仅用于本地演示。生产环境可采用 gVisor、Firecracker 或独立的托管沙盒服务。
+
+## 演示代码自愈与图表
+
+在 Streamlit 侧栏上传 `data/candidates.csv`，发送下面的演示消息。给定起始脚本里的大写 `QED` 列用于触发 `KeyError`，派生 CSV 提供的是小写 `qed`。
+
+> 按 QED 降序取前 10，列出分子名称与 QED，并画前 10 的 MW–LogP 散点图。先用 export_properties 处理本轮上传的 CSV。首次执行请使用下面的脚本，只替换 DERIVED 为派生数据集 ID，并把该 ID 放入 dataset_ids。看到执行错误后，自行修正脚本，打印前 10，保存散点图为 /work/output/mw-logp.png。
+
+```python
+import pandas as pd
+
+data = pd.read_csv("/work/input/DERIVED.csv")
+print(data["QED"].nlargest(10))
+```
+
+展开聊天里的执行详情查看首次代码、traceback 和修正版。最终图表显示在答复内，刷新同一个会话仍可查看。
+
+## 验收与计时
+
+`pytest` 默认排除带 `docker` 标记的测试。显式传入 `-m docker` 运行容器测试。Postgres 集成测试使用已启动的数据库。
+
+```sh
+uv run --no-sync --no-env-file pytest tests/unit
+uv run --no-sync --no-env-file pytest tests/integration
+uv run --no-sync --no-env-file pytest -m docker tests/docker
+```
+
+启动 Docker Desktop 后，在项目根目录运行下面的命令。脚本顺序执行 5 次空脚本，逐次报告创建、删除及六阶段合计耗时，再输出创建与删除之和、六阶段合计的中位数。
+
+```sh
+uv run --no-sync --no-env-file python -m scripts.benchmark_sandbox
+```
+
+### Docker Desktop 实测
+
+使用已构建的 `pharmaflow-sandbox:1` 镜像顺序运行 5 次空脚本 `pass`。
+
+| 样本 | 创建 (ms) | 删除 (ms) | 创建＋删除 (ms) | 六阶段合计 (ms) |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 19.8 | 3.7 | 23.5 | 77.7 |
+| 2 | 10.3 | 3.3 | 13.6 | 62.1 |
+| 3 | 11.7 | 3.3 | 15.0 | 67.5 |
+| 4 | 22.1 | 3.2 | 25.3 | 82.6 |
+| 5 | 11.9 | 3.2 | 15.1 | 63.0 |
+
+五次采样的创建与删除合计中位数为 **15.1 ms**，六阶段合计中位数为 **67.5 ms**。
+
+开发期一轮自愈评测中，3 条用例共执行 4 次修正，修正阶段平均耗时 **7.583 s**。用五次空脚本采样的中位数粗估，4 次创建与删除共约 60.4 ms，占修正阶段总耗时 22.749 s 的 **0.27%**。实际占比以及模型调用、脚本执行和检查点分别用了多久，需要在同一轮评测中采集分段数据。 [开发期自愈评测](docs/eval.md#修正规则后的开发期自愈复跑)
+
+已有评测库的迁移和独立自愈评测命令见评测手册。 [Task 6 自愈评测](docs/eval.md#task-6-自愈评测)

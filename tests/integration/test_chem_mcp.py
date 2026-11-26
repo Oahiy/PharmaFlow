@@ -11,6 +11,7 @@ from mcp_servers.chem import tools as chem_tools
 from mcp_servers.chem.models import (
     DruglikeMolecule,
     DruglikeResult,
+    ExportPropertiesResult,
     InvalidMolecule,
     MoleculeProperties,
     PropertiesResult,
@@ -32,6 +33,7 @@ async def test_chem_tools_over_one_stdio_session(tmp_path):
                     "PYTHONPATH": str(PROJECT_ROOT),
                     "FASTMCP_ENV_FILE": os.devnull,
                     "PYTHONDONTWRITEBYTECODE": "1",
+                    "UPLOAD_DIR": str(tmp_path),
                 },
             }
         }
@@ -41,6 +43,7 @@ async def test_chem_tools_over_one_stdio_session(tmp_path):
         tools = await session.list_tools()
         assert {tool.name for tool in tools.tools} == {
             "compute_properties",
+            "export_properties",
             "filter_druglike",
         }
         assert all(tool.outputSchema for tool in tools.tools)
@@ -54,6 +57,9 @@ async def test_chem_tools_over_one_stdio_session(tmp_path):
         )
         mixed = await session.call_tool(
             "compute_properties", {"request": {"smiles": ["not-smiles", "CCO"]}}
+        )
+        exported = await session.call_tool(
+            "export_properties", {"request": {"dataset_id": "candidates"}}
         )
 
     assert not computed.isError, computed.content
@@ -76,6 +82,12 @@ async def test_chem_tools_over_one_stdio_session(tmp_path):
     assert invalid == InvalidMolecule(smiles="not-smiles")
     assert isinstance(ethanol, MoleculeProperties)
     assert ethanol.mw == pytest.approx(46.069, abs=0.01)
+
+    assert not exported.isError, exported.content
+    export = ExportPropertiesResult.model_validate(exported.structuredContent)
+    assert export.row_count == 50
+    assert {"mw", "logp", "qed"} <= set(export.columns)
+    assert (tmp_path / f"{export.dataset_id}.csv").is_file()
 
 
 @pytest.mark.parametrize(

@@ -19,6 +19,7 @@ dependencies = [
     "mcp<2",
     "openai>=3.57.0",
     "pandas",
+    "pillow",
     "psycopg[binary,pool]",
     "pydantic",
     "python-dotenv>=1.2.4",
@@ -26,7 +27,9 @@ dependencies = [
     "pyyaml",
     "qdrant-client",
     "rdkit",
+    "requests",
     "streamlit",
+    "urllib3",
     "uvicorn[standard]",
 ]
 
@@ -40,8 +43,10 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "-m 'not docker'"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = ["docker: requires a Docker daemon and the built sandbox image"]
 
 [tool.ruff]
 target-version = "py312"

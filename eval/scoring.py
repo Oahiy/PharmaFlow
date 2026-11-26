@@ -8,8 +8,17 @@ from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 from pydantic import JsonValue, ValidationError
 
 from agent.graph import STEP_LIMIT_MESSAGE
+from sandbox.models import MAX_REPAIR_ROUNDS, RUN_PYTHON
+from sandbox.tool import is_repairable_failure
 
-from .cases import LIT_TOOLS, EvalCase, ExpectedCall, ToolArguments, normalize_request
+from .cases import (
+    LIT_TOOLS,
+    EvalCase,
+    ExpectedCall,
+    ToolArguments,
+    normalize_expected_request,
+    normalize_request,
+)
 from .checks import check_rules, field_value
 from .results import FailureType
 
@@ -18,6 +27,7 @@ FAILURE_PRIORITY: tuple[FailureType, ...] = (
     "invalid_args",
     "agent_error",
     "step_limit",
+    "repair_budget_exceeded",
     "tool_error",
     "wrong_tool",
     "rule_failed",
@@ -74,7 +84,7 @@ def parameter_error(
         request = ToolArguments.model_validate(call.args).request
         actual = normalize_request(step.tool, request, step.expected_error)
         expected = (
-            normalize_request(
+            normalize_expected_request(
                 step.tool, {**step.request, **references}, step.expected_error
             )
             if references
@@ -98,6 +108,8 @@ def call_error(step: ExpectedCall, call: ObservedCall) -> FailureType | None:
         return "step_limit"
     if step.tool in LIT_TOOLS and step.expected_error is None and "回放未命中:" in text:
         return "replay_miss"
+    if step.allow_repairable_failure and is_repairable_failure(result):
+        return None
     if (
         step.expected_error == "invalid_nct_format"
         and "request.nct_id" in text
@@ -236,6 +248,17 @@ class Assessment:
     evidence: dict[str, JsonValue]
     failure_type: FailureType | None
     error_detail: dict[str, JsonValue] | None
+    repair_attempts: int | None
+
+
+def _repair_attempts(calls: list[ObservedCall]) -> int:
+    return sum(
+        1
+        for call in calls
+        if call.name == RUN_PYTHON
+        and call.result is not None
+        and (call.result.status == "success" or is_repairable_failure(call.result))
+    )
 
 
 def score_case(
@@ -271,6 +294,12 @@ def score_case(
         path.failures.add("rule_failed")
         path.detail["answer"] = "Agent 未返回最终回答。"
 
+    repair_attempts = None
+    if case.category == "self_healing":
+        repair_attempts = _repair_attempts(calls)
+        if repair_attempts > MAX_REPAIR_ROUNDS:
+            path.failures.add("repair_budget_exceeded")
+
     failure = next((name for name in FAILURE_PRIORITY if name in path.failures), None)
     return Assessment(
         tools_correct=path.tools_correct,
@@ -279,4 +308,5 @@ def score_case(
         evidence=path.evidence,
         failure_type=failure,
         error_detail=path.detail if path.detail else None,
+        repair_attempts=repair_attempts,
     )

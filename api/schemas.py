@@ -8,6 +8,7 @@ from langchain_core.messages.tool import InvalidToolCall, ToolCall
 from pydantic import BaseModel, Field
 
 from mcp_servers.chem.models import DatasetId
+from sandbox.models import RUN_PYTHON, ArtifactReference
 
 
 class RunRequest(BaseModel):
@@ -39,6 +40,17 @@ class ToolHistory(HistoryMessage):
     name: str | None
     tool_call_id: str
     status: Literal["success", "error"]
+    files: list[ArtifactReference] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+
+def tool_artifacts(message: ToolMessage) -> list[ArtifactReference] | None:
+    if message.name == RUN_PYTHON and message.artifact is not None:
+        return [
+            ArtifactReference.model_validate(file) for file in message.artifact["files"]
+        ]
+    return None
 
 
 def serialize_message(message: BaseMessage) -> HumanHistory | AIHistory | ToolHistory:
@@ -56,6 +68,7 @@ def serialize_message(message: BaseMessage) -> HumanHistory | AIHistory | ToolHi
             name=message.name,
             tool_call_id=message.tool_call_id,
             status=message.status,
+            files=tool_artifacts(message),
         )
     raise ValueError(f"未知会话消息类型：{message.type}")
 
@@ -109,6 +122,9 @@ class ToolResult(SSEPayload):
     tool_call_id: str
     output: str
     status: Literal["success", "error"]
+    files: list[ArtifactReference] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class Token(SSEPayload):

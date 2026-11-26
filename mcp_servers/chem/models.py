@@ -2,7 +2,14 @@
 
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FiniteFloat,
+    PositiveInt,
+    model_validator,
+)
 
 DatasetId = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")]
 
@@ -82,6 +89,30 @@ class PropertiesResult(BaseModel):
     """One property result or parse error for each input molecule."""
 
     results: list[MoleculeProperties | InvalidMolecule]
+
+
+class ExportPropertiesInput(BaseModel):
+    """Source CSV for a batch of descriptors to use in the sandbox."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_id: DatasetId = Field(description="Source CSV dataset ID without .csv.")
+
+
+class InvalidPropertyRow(BaseModel):
+    """An excluded row and its position among data rows, starting at 1."""
+
+    row: PositiveInt
+    error: Literal["invalid_smiles"] = "invalid_smiles"
+
+
+class ExportPropertiesResult(BaseModel):
+    """Derived CSV metadata and the positions of any excluded molecules."""
+
+    dataset_id: DatasetId | None
+    columns: list[str]
+    row_count: int = Field(ge=0)
+    invalid_rows: list[InvalidPropertyRow]
 
 
 class DruglikeMolecule(MoleculeRecord):

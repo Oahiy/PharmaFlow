@@ -6,12 +6,13 @@ from uuid import UUID
 
 from pydantic import JsonValue
 
-Category = Literal["single_tool", "multi_hop", "exception"]
+Category = Literal["single_tool", "multi_hop", "exception", "self_healing"]
 FailureType = Literal[
     "replay_miss",
     "invalid_args",
     "agent_error",
     "step_limit",
+    "repair_budget_exceeded",
     "tool_error",
     "wrong_tool",
     "rule_failed",
@@ -33,6 +34,7 @@ class CaseResult:
     judge_score: int | None = None
     failure_type: FailureType | None = None
     error_detail: dict[str, JsonValue] | None = None
+    repair_attempts: int | None = None
 
     @property
     def success(self) -> bool:

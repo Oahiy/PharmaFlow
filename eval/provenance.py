@@ -1,9 +1,13 @@
 """Build the public configuration recorded for each run."""
 
+import json
 import subprocess
+from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from langchain_core.tools import BaseTool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import JsonValue
 
 from agent.config import PROJECT_ROOT, LLMSettings
@@ -22,6 +26,8 @@ def run_config(
     lit: LitSettings,
     max_steps: int,
     commit: str,
+    system_prompt: str,
+    tools: list[BaseTool],
 ) -> dict[str, JsonValue]:
     url = urlsplit(str(model.base_url))
     base_url = urlunsplit((url.scheme, url.netloc.rsplit("@", 1)[-1], url.path, "", ""))
@@ -31,6 +37,10 @@ def run_config(
         "temperature": TEMPERATURE,
         "thinking_disabled": model.thinking_disabled,
     }
+    tool_schemas = [convert_to_openai_tool(tool) for tool in tools]
+    tool_schema_json = json.dumps(
+        tool_schemas, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return {
         **model_config,
         "max_steps": max_steps,
@@ -55,6 +65,8 @@ def run_config(
         ),
         "cases_sha256": suite.sha256,
         "recordings_sha256": recordings_digest(lit.recordings_dir),
+        "system_prompt_sha256": sha256(system_prompt.encode("utf-8")).hexdigest(),
+        "tool_schema_sha256": sha256(tool_schema_json.encode("utf-8")).hexdigest(),
     }
 
 

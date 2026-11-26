@@ -1,11 +1,13 @@
 import json
 import shutil
+from hashlib import sha256
 from uuid import UUID
 
 import httpx
 import pytest
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from openai import APIConnectionError, RateLimitError
 
 from agent.config import AgentSettings, LLMSettings
@@ -60,7 +62,13 @@ async def test_runner_records_two_cases_and_isolates_checkpoints(
         ),
     )
 
+    bound_tool_schemas = []
+
     class FixtureModel(fake_chat_model):
+        def bind_tools(self, tools, **kwargs):
+            bound_tool_schemas.extend(convert_to_openai_tool(tool) for tool in tools)
+            return super().bind_tools(tools, **kwargs)
+
         def _generate(self, messages, stop=None, run_manager=None, **kwargs):
             if fail_first_model_call and messages[-1].text == empty_results.question:
                 raise RuntimeError(f"模拟模型错误 {secret}")
@@ -148,6 +156,17 @@ async def test_runner_records_two_cases_and_isolates_checkpoints(
     assert recorded["base_url"] == "https://example.invalid/v1"
     assert recorded["cases_sha256"] == suite.sha256
     assert recorded["recordings_sha256"] == recordings_digest(DEFAULT_RECORDINGS_DIR)
+    assert (
+        recorded["system_prompt_sha256"]
+        == sha256(model.received[0][0].text.encode("utf-8")).hexdigest()
+    )
+    bound_schema_json = json.dumps(
+        bound_tool_schemas, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    assert (
+        recorded["tool_schema_sha256"]
+        == sha256(bound_schema_json.encode("utf-8")).hexdigest()
+    )
     assert recorded["lit_mode"] == "replay"
     assert recorded["recordings_dir"] == str(DEFAULT_RECORDINGS_DIR)
     assert recorded["judge"]["method"] == "function_calling"

@@ -10,9 +10,11 @@ from urllib.parse import parse_qsl, quote, quote_plus, unquote, urlsplit
 from uuid import UUID, uuid4
 
 from anyio import BrokenResourceError, ClosedResourceError, EndOfStream
+from docker.errors import DockerException
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool
 from langfuse import Langfuse
 from langgraph.graph.state import CompiledStateGraph
 from mcp.shared.exceptions import McpError
@@ -26,15 +28,20 @@ from openai import (
 from psycopg import Error as DatabaseError
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import DictRow
-from pydantic import JsonValue
+from pydantic import BaseModel, JsonValue
+from requests.exceptions import ConnectionError as DockerConnectionError
+from requests.exceptions import ReadTimeout
 
 from agent.config import AgentSettings, git_commit
-from agent.graph import build_graph
+from agent.graph import SYSTEM_PROMPT, build_graph
 from agent.mcp_client import open_mcp_tools
 from agent.persistence import open_connection_pool, setup_checkpointer
 from agent.state import AgentState
 from agent.tracing import LANGFUSE_KEYS, CallbackFactory, trace_config
+from mcp_servers.chem.models import ExportPropertiesResult
 from mcp_servers.lit.config import DEFAULT_RECORDINGS_DIR, LitSettings
+from sandbox.models import RUN_PYTHON
+from sandbox.tool import create_run_python_tool, is_repairable_failure, sandbox_config
 
 from .cases import CASE_DIRECTORY, EvalCase, load_cases
 from .judge import Judge, JudgeParseError
@@ -58,6 +65,9 @@ _INFRASTRUCTURE_ERRORS = (
     BrokenResourceError,
     ClosedResourceError,
     EndOfStream,
+    DockerException,
+    DockerConnectionError,
+    ReadTimeout,
     *MODEL_SERVICE_ERRORS,
 )
 _CREDENTIAL_QUERY_FIELDS = frozenset(
@@ -139,6 +149,27 @@ def redact(value: JsonValue, secrets: tuple[str, ...]) -> JsonValue:
     return value
 
 
+async def _seed_call(
+    tool: BaseTool, request: BaseModel, config: RunnableConfig
+) -> tuple[AIMessage, ToolMessage]:
+    message_id = str(uuid4())
+    seed = AIMessage(
+        id=message_id,
+        content="",
+        tool_calls=[
+            {
+                "name": tool.name,
+                "args": {"request": request.model_dump(mode="json")},
+                "id": f"initial-{uuid4().hex}",
+                "type": "tool_call",
+            }
+        ],
+    )
+    if tool.name == RUN_PYTHON:
+        config = sandbox_config(config, message_id, final_repair=False)
+    return seed, await tool.ainvoke(seed.tool_calls[0], config)
+
+
 async def execute_case(
     case: EvalCase,
     *,
@@ -148,8 +179,44 @@ async def execute_case(
     trace_id: str,
     config: RunnableConfig,
     usage: AgentUsage,
+    tools_by_name: dict[str, BaseTool],
 ) -> CaseResult:
     messages: list[AnyMessage] = [HumanMessage(content=case.question)]
+    if case.initial_export_properties is not None:
+        seed, exported = await _seed_call(
+            tools_by_name["export_properties"], case.initial_export_properties, config
+        )
+        if exported.status != "success":
+            raise RuntimeError(f"用例 {case.id} 的预置性质导出失败：{exported.text}")
+        properties = ExportPropertiesResult.model_validate(
+            exported.artifact["structured_content"]
+        )
+        if properties.dataset_id is None:
+            raise RuntimeError(
+                f"用例 {case.id} 的预置性质导出没有有效行：{exported.text}"
+            )
+        case = case.bind_property_export(properties.dataset_id)
+        messages.extend([seed, exported])
+    if case.initial_run_python is not None:
+        seed, failure = await _seed_call(
+            tools_by_name[RUN_PYTHON], case.initial_run_python, config
+        )
+        expected = case.initial_failure
+        assert expected is not None
+        if is_repairable_failure(failure):
+            output = failure.artifact["structured_content"]
+            matches = output["error"]["kind"] == expected.kind and (
+                expected.stderr_contains is None
+                or expected.stderr_contains in output["stderr"]
+            )
+        else:
+            matches = False
+        if not matches:
+            raise RuntimeError(
+                f"用例 {case.id} 的预置脚本未产生预期失败 {expected.model_dump_json()}：{failure.text}"
+            )
+        messages.extend([seed, failure])
+    scored_from = len(messages)
     turn: AgentState = {"messages": messages, "step_count": 0, "max_steps": MAX_STEPS}
     agent_exception = None
     start = perf_counter_ns()
@@ -167,7 +234,7 @@ async def execute_case(
 
     assessment = score_case(
         case,
-        messages,
+        messages[scored_from:],
         describe_exception(agent_exception) if agent_exception is not None else None,
     )
     result = CaseResult(
@@ -180,6 +247,7 @@ async def execute_case(
         params_valid=assessment.params_valid,
         failure_type=assessment.failure_type,
         error_detail=assessment.error_detail,
+        repair_attempts=assessment.repair_attempts,
     )
     if case.judge is None or not result.success:
         return result
@@ -231,9 +299,6 @@ async def run_suite(
     }
     run_id, user_id = uuid4(), uuid4()
     commit = git_commit()
-    config = run_config(
-        model=settings.llm, suite=suite, lit=lit, max_steps=MAX_STEPS, commit=commit
-    )
     secrets = secret_values(settings)
 
     async with open_connection_pool(settings.database_url.get_secret_value()) as pool:
@@ -242,7 +307,18 @@ async def run_suite(
             await setup_schema(conn)
         model_error = None
         async with open_mcp_tools(lit_env=lit_env) as tools:
-            graph = build_graph(model, tools, checkpointer)
+            agent_tools = [*tools, create_run_python_tool()]
+            config = run_config(
+                model=settings.llm,
+                suite=suite,
+                lit=lit,
+                max_steps=MAX_STEPS,
+                commit=commit,
+                system_prompt=SYSTEM_PROMPT.text,
+                tools=agent_tools,
+            )
+            tools_by_name = {tool.name: tool for tool in agent_tools}
+            graph = build_graph(model, agent_tools, checkpointer)
             async with pool.connection() as conn:
                 await start_run(
                     conn,
@@ -282,6 +358,7 @@ async def run_suite(
                         trace_id=trace_id,
                         config=invocation,
                         usage=usage,
+                        tools_by_name=tools_by_name,
                     )
                 except MODEL_SERVICE_ERRORS as exc:
                     # Close the MCP task groups before propagating the provider error.

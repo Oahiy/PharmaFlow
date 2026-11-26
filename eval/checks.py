@@ -10,12 +10,15 @@ from .cases import (
     AnswerRegex,
     AnswerSequence,
     Check,
+    SequencePattern,
     ToolCount,
+    ToolField,
     ToolMatches,
     ToolNumber,
+    ToolSequence,
 )
 
-type ToolCheck = ToolMatches | ToolCount | ToolNumber
+type ToolCheck = ToolMatches | ToolCount | ToolNumber | ToolSequence
 
 
 def field_value(value: JsonValue, path: str) -> JsonValue:
@@ -48,6 +51,13 @@ def matches_value(actual: JsonValue, expected: JsonValue) -> bool:
     return actual == expected
 
 
+def check_sequence(rule: SequencePattern, text: str) -> bool:
+    values = [match.group() for match in re.finditer(rule.pattern, text)]
+    if rule.allow_trailing:
+        values = values[: len(rule.values)]
+    return values == rule.values
+
+
 def check_tool(rule: ToolCheck, evidence: dict[str, JsonValue]) -> str | None:
     try:
         value = field_value(evidence[rule.step], rule.path)
@@ -71,17 +81,19 @@ def check_tool(rule: ToolCheck, evidence: dict[str, JsonValue]) -> str | None:
                 and not isinstance(value, bool)
                 and rule.min <= value <= rule.max
             )
-    return (
-        None if passed else f"步骤 {rule.step} 的字段 {rule.path or '根'} 不满足规则。"
-    )
+        case ToolSequence():
+            passed = isinstance(value, str) and check_sequence(rule, value)
+    if passed:
+        return None
+    detail = f"步骤 {rule.step} 的字段 {rule.path or '根'} 不满足规则。"
+    if rule.path == "stdout":
+        detail = f"{detail}\n实际 stdout\n{value}"
+    return detail
 
 
 def check_answer(rule: AnswerRegex | AnswerNumber | AnswerSequence, text: str) -> bool:
     if isinstance(rule, AnswerSequence):
-        values = [match.group() for match in re.finditer(rule.pattern, text)]
-        if rule.allow_trailing:
-            values = values[: len(rule.values)]
-        return values == rule.values
+        return check_sequence(rule, text)
     if isinstance(rule, AnswerRegex):
         found = re.search(rule.pattern, text, flags=re.IGNORECASE) is not None
         return found != rule.absent
@@ -101,7 +113,7 @@ def check_rules(
     text = normalize("NFKC", answer).replace("**", "").replace("`", "")
     failures: list[JsonValue] = []
     for rule in rules:
-        if isinstance(rule, (ToolMatches, ToolCount, ToolNumber)):
+        if isinstance(rule, ToolField):
             detail = check_tool(rule, evidence)
         else:
             detail = None if check_answer(rule, text) else "最终回答不满足规则。"
