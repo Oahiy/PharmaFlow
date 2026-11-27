@@ -1,0 +1,60 @@
+- id: R01
+  category: pubmed
+  question_zh: CodeBreaK 200 的论文里，sotorasib 和多西他赛两组发生 3 级及以上治疗相关不良事件的比例分别是多少？
+  query_en: CodeBreaK 200 paper, sotorasib versus docetaxel, severe treatment-related toxicity at grade 3 or higher
+- id: R02
+  category: pubmed
+  question_zh: KRYSTAL-12 的主论文分别报告了多少例与 adagrasib 和多西他赛治疗相关的死亡？
+  query_en: KRYSTAL-12 randomized paper, adagrasib and docetaxel, fatal adverse events attributed to treatment
+- id: R03
+  category: label
+  question_zh: NSCLC 患者末次免疫治疗到开始 sotorasib 的间隔，与严重肝毒性风险有什么关系？
+  query_en: sotorasib, time gap since last checkpoint inhibitor dose, severe hepatotoxicity risk in NSCLC
+- id: R04
+  category: pubmed
+  question_zh: KRYSTAL-1 的晚期 NSCLC 单药研究中，有多少患者因治疗相关不良事件停用 adagrasib？
+  query_en: Treatment-related toxicity leading to drug discontinuation, adagrasib KRYSTAL-1 lung cancer monotherapy
+- id: R05
+  category: pubmed
+  question_zh: CodeBreaK 300 的论文如何描述 sotorasib 联合帕尼单抗的皮肤毒性和低镁血症？
+  query_en: CodeBreaK 300 colorectal cancer sotorasib panitumumab, skin toxicity and hypomagnesemia in combination arms
+- id: R06
+  category: pubmed
+  question_zh: sotorasib 每日 960 mg 和 240 mg 两种剂量相比，治疗相关不良事件（包括 3 级及以上）的发生率有什么差别？
+  query_en: sotorasib 240 mg/day compared with 960 mg/day, any-grade and grade ≥3 rates for adverse events attributed to treatment
+- id: R07
+  category: trial
+  question_zh: CodeBreaK 200 的严重不良事件表中，各治疗组的 ALT 升高人数与风险人数是多少？
+  query_en: CodeBreaK 200 NCT04303780 serious ALT elevation, Alanine aminotransferase increased counts and denominators by arm
+- id: R08
+  category: trial
+  question_zh: KRYSTAL-12 的严重不良事件表如何按组报告肺炎和过敏性肺炎？
+  query_en: KRYSTAL-12 NCT04685135 serious pneumonitis counts per group, including hypersensitivity pneumonitis
+- id: R09
+  category: trial
+  question_zh: CodeBreaK 200 的其他不良事件表里，多西他赛组和 AMG 510 组各有多少人发生腹泻？
+  query_en: Diarrhoea in other adverse events, CodeBreaK 200 NCT04303780, compare Docetaxel and AMG 510 by affected counts
+- id: R10
+  category: trial
+  question_zh: KRYSTAL-12 的其他不良事件按什么频率阈值报告，观察了多长时间？
+  query_en: KRYSTAL-12 NCT04685135 adverse event reporting overview, frequency cutoff for other events and time window
+- id: R11
+  category: label
+  question_zh: sotorasib 的说明书建议多久查一次肝功能，发生肝毒性时如何调整给药？
+  query_en: sotorasib liver toxicity prescribing guidance, liver test schedule and dose withholding after hepatotoxicity
+- id: R12
+  category: label
+  question_zh: adagrasib 说明书对 QTc 延长建议怎样做心电图监测，什么情况需要暂停或永久停药？
+  query_en: adagrasib prescribing information QTc prolongation, ECG monitoring, when to hold or permanently stop
+- id: R13
+  category: label
+  question_zh: sotorasib 联合帕尼单抗用于结直肠癌时，说明书表格里全等级和 3 或 4 级皮疹各是多少？
+  query_en: CodeBreaK 300 sotorasib plus panitumumab, prescribing label table rash frequency by grade in colorectal cancer
+- id: R14
+  category: alias
+  question_zh: LUMAKRAS 的说明书在确诊药物相关间质性肺病或肺炎后是否要求永久停药？
+  query_en: LUMAKRAS pneumonitis or ILD, when to permanently discontinue per prescribing information
+- id: R15
+  category: alias
+  question_zh: 以 MRTX849 的研发代号去查 KRYSTAL-1 说明书表格，ALT 升高的全等级和 3 或 4 级发生率各是多少？
+  query_en: MRTX849 KRYSTAL-1 laboratory table, ALT elevation all grades versus grade 3 or 4 incidence

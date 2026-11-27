@@ -1,6 +1,7 @@
 """Build the same upstream requests for the tools and the recorder."""
 
 import json
+from collections.abc import Sequence
 
 import httpx
 
@@ -17,20 +18,31 @@ _TRIALS_URL = "https://clinicaltrials.gov/api/v2/studies"
 _OPENFDA_URL = f"https://{OPENFDA_HOST}{OPENFDA_LABEL_PATH}"
 
 
-def pubmed_search_url(request: PubMedSearchInput) -> httpx.URL:
+def _pubmed_search_url(query: str, max_results: int) -> httpx.URL:
     return httpx.URL(
         f"{_PUBMED_URL}/esearch.fcgi",
         params={
             "db": "pubmed",
-            "term": request.query,
+            "term": query,
             "retmode": "json",
-            "retmax": request.max_results,
+            "retmax": max_results,
             "sort": "relevance",
         },
     )
 
 
-def pubmed_fetch_url(pmids: list[str]) -> httpx.URL:
+def pubmed_search_url(request: PubMedSearchInput) -> httpx.URL:
+    return _pubmed_search_url(request.query, request.max_results)
+
+
+def corpus_pubmed_search_url() -> httpx.URL:
+    return _pubmed_search_url(
+        '"KRAS G12C"[Title/Abstract] AND (sotorasib OR adagrasib OR "AMG 510" OR MRTX849) AND hasabstract',
+        200,
+    )
+
+
+def pubmed_fetch_url(pmids: Sequence[str]) -> httpx.URL:
     return httpx.URL(
         f"{_PUBMED_URL}/efetch.fcgi",
         params={"db": "pubmed", "id": ",".join(pmids), "retmode": "xml"},

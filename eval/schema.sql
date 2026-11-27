@@ -39,3 +39,27 @@ CREATE TABLE IF NOT EXISTS eval.results (
         'judge_parse_error', 'judge_below_threshold'
     ))
 );
+
+CREATE TABLE IF NOT EXISTS eval.retrieval_runs (
+    run_id uuid PRIMARY KEY,
+    git_commit text NOT NULL,
+    config jsonb NOT NULL,
+    started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    finished_at timestamptz,
+    CHECK (finished_at >= started_at)
+);
+
+CREATE TABLE IF NOT EXISTS eval.retrieval_results (
+    run_id uuid NOT NULL REFERENCES eval.retrieval_runs (run_id),
+    query_id text NOT NULL,
+    method text NOT NULL CHECK (method IN ('dense', 'hybrid', 'hybrid_rerank')),
+    first_relevant_rank smallint CHECK (first_relevant_rank BETWEEN 1 AND 8),
+    hit_count integer NOT NULL CHECK (hit_count >= 0),
+    relevant_count integer NOT NULL CHECK (relevant_count > 0),
+    citation_ids jsonb NOT NULL CHECK (jsonb_typeof(citation_ids) = 'array'),
+    PRIMARY KEY (run_id, query_id, method),
+    CHECK (jsonb_array_length(citation_ids) <= 8),
+    CHECK (first_relevant_rank <= jsonb_array_length(citation_ids)),
+    CHECK (hit_count <= relevant_count AND hit_count <= jsonb_array_length(citation_ids)),
+    CHECK ((first_relevant_rank IS NULL) = (hit_count = 0))
+);

@@ -88,7 +88,7 @@ class _TrialSearchResponse(_TrialRecord):
         return self
 
 
-class _EventGroup(_TrialRecord):
+class EventGroup(_TrialRecord):
     group_id: str = Field(validation_alias="id")
     title: str
     deaths_num_affected: NonNegativeInt | None = None
@@ -99,38 +99,50 @@ class _EventGroup(_TrialRecord):
     other_num_at_risk: NonNegativeInt | None = None
 
 
-class _EventStats(_TrialRecord):
+class EventStats(_TrialRecord):
     group_id: str
     num_affected: NonNegativeInt | None = None
     num_at_risk: NonNegativeInt | None = None
     num_events: NonNegativeInt | None = None
 
 
-class _Event(_TrialRecord):
+class AdverseEvent(_TrialRecord):
     term: str
     organ_system: str | None = None
     source_vocabulary: str | None = None
     assessment_type: str | None = None
-    stats: list[_EventStats] | None = None
+    stats: list[EventStats] | None = None
 
 
-class _AdverseEvents(_TrialRecord):
+class AdverseEvents(_TrialRecord):
+    """The complete adverse event module, including all reported event rows."""
+
     frequency_threshold: str | None = None
     time_frame: str | None = None
     description: str | None = None
-    event_groups: list[_EventGroup] | None = None
-    serious_events: list[_Event] | None = None
-    other_events: list[_Event] | None = None
+    event_groups: list[EventGroup] | None = None
+    serious_events: list[AdverseEvent] | None = None
+    other_events: list[AdverseEvent] | None = None
 
 
 class _TrialResults(_TrialRecord):
-    adverse_events_module: _AdverseEvents | None = None
+    adverse_events_module: AdverseEvents | None = None
 
 
-class _AdverseEventsResponse(_TrialRecord):
+class AdverseEventsResponse(_TrialRecord):
     protocol_section: _Protocol
     has_results: bool
     results_section: _TrialResults | None = None
+
+    @property
+    def nct_id(self) -> NctId:
+        return self.protocol_section.identification_module.nct_id
+
+    @property
+    def adverse_events(self) -> AdverseEvents | None:
+        if self.results_section is None:
+            return None
+        return self.results_section.adverse_events_module
 
 
 def _summary_field(values: list[str] | None) -> ResultList[str] | None:
@@ -183,7 +195,7 @@ async def search_trials(
     )
 
 
-def _event_row(nct_id: NctId, event: _Event) -> TrialAdverseEvent:
+def _event_row(nct_id: NctId, event: AdverseEvent) -> TrialAdverseEvent:
     stats = None
     if event.stats is not None:
         rows = [TrialEventStats(**row.model_dump()) for row in event.stats]
@@ -199,7 +211,7 @@ def _event_row(nct_id: NctId, event: _Event) -> TrialAdverseEvent:
 
 
 def _event_table(
-    nct_id: NctId, events: list[_Event] | None, *, term: str | None
+    nct_id: NctId, events: list[AdverseEvent] | None, *, term: str | None
 ) -> TrialEventList | None:
     if events is None:
         return None
@@ -218,25 +230,25 @@ def _event_table(
     )
 
 
+def parse_adverse_events_response(body: bytes, nct_id: NctId) -> AdverseEventsResponse:
+    source = AdverseEventsResponse.model_validate_json(body)
+    if source.nct_id != nct_id:
+        raise ValueError(f"ClinicalTrials.gov returned {source.nct_id} for {nct_id}")
+    if source.adverse_events is not None and not source.has_results:
+        raise ValueError(
+            f"ClinicalTrials.gov returned adverse events for {nct_id} with hasResults=false"
+        )
+    return source
+
+
 def parse_trial_adverse_events(
     body: bytes, request: TrialAdverseEventsInput
 ) -> TrialAdverseEventsResult:
-    source = _AdverseEventsResponse.model_validate_json(body)
-    nct_id = source.protocol_section.identification_module.nct_id
-    if nct_id != request.nct_id:
-        raise ValueError(f"ClinicalTrials.gov returned {nct_id} for {request.nct_id}")
-
+    nct_id = request.nct_id
+    source = parse_adverse_events_response(body, nct_id)
     tables = None
-    module = (
-        source.results_section.adverse_events_module
-        if source.results_section is not None
-        else None
-    )
+    module = source.adverse_events
     if module is not None:
-        if not source.has_results:
-            raise ValueError(
-                f"ClinicalTrials.gov returned adverse events for {nct_id} with hasResults=false"
-            )
         groups = None
         if module.event_groups is not None:
             rows = [

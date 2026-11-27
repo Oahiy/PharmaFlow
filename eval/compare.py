@@ -17,6 +17,7 @@ from .storage import has_full_coverage, run_coverage
 MODEL_INPUT_DIGESTS = {
     "system_prompt_sha256": "系统提示词",
     "tool_schema_sha256": "工具定义",
+    "corpus_sha256": "检索语料",
 }
 
 

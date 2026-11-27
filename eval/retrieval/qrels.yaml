@@ -1,0 +1,105 @@
+# 文献、试验和说明书均参与可回答性与相关性判断。
+# 能回答问题一部分的片段即可支持其所属单元，同一文献可用于多条查询。
+# 判断时保留研究人群、给药方案、事件归因、严重性和等级口径。
+# 对应查询的候选池已有该单元时记 pool，补充池外单元时记 corpus。
+
+R01:
+  - unit_id: pubmed:36764316
+    source: corpus
+    reason: CodeBreaK 200 主论文按组报告了 sotorasib 和多西他赛的 ≥3 级治疗相关不良事件比例。
+
+R02:
+  - unit_id: pubmed:40783289
+    source: pool
+    reason: KRYSTAL-12 主论文分别报告了 adagrasib 组和多西他赛组的治疗相关死亡例数。
+
+R03:
+  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:warnings_and_cautions:5.1
+    source: pool
+    reason: 5.1 按距离末次免疫治疗 ≤3 个月、>3 个月及从未接受免疫治疗报告全等级肝毒性发生率，覆盖间隔相关性。
+
+R04:
+  # 说明书 6.1 的永久停药数字使用说明书不良反应口径，论文给出题目指定的治疗相关不良事件口径。
+  - unit_id: pubmed:35658005
+    source: corpus
+    reason: KRYSTAL-1 的晚期 NSCLC 单药论文报告因治疗相关不良事件停用 adagrasib 的比例为 6.9%。
+
+R05:
+  - unit_id: pubmed:37870968
+    source: pool
+    reason: CodeBreaK 300 主论文将皮肤毒性和低镁血症列为 sotorasib 联合帕尼单抗最常见的事件。
+  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:adverse_reactions:6.1
+    source: pool
+    reason: 6.1 的 CodeBreaK 300 段落指出皮疹常见，并列出以低镁为代表的 3 或 4 级实验室异常。
+  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:adverse_reactions_table:table-3
+    source: pool
+    reason: 说明书表 5 给出 CodeBreaK 300 联合治疗组皮疹和其他皮肤不良反应的分级发生率。
+  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:adverse_reactions_table:table-4
+    source: pool
+    reason: 说明书表 6 按等级报告 CodeBreaK 300 联合治疗组的血镁下降发生率。
+
+R06:
+  # 单药剂量比较摘要使用 TEAE 口径，CodeBreaK 300 的联合用药比较覆盖本题的 ≥3 级部分。
+  - unit_id: pubmed:37870968
+    source: pool
+    reason: CodeBreaK 300 在两组均联合帕尼单抗的条件下，报告了 960 mg 和 240 mg 剂量组的 ≥3 级治疗相关不良事件比例。
+
+R07:
+  - unit_id: trial:NCT04303780:serious:investigations
+    source: pool
+    reason: CodeBreaK 200 的严重事件检查项中，ALT 升高一行给出各组的受影响人数和风险人数。
+
+R08:
+  - unit_id: trial:NCT04685135:serious:respiratory-thoracic-and-mediastinal-disorders
+    source: pool
+    reason: KRYSTAL-12 的严重呼吸系统事件分别列出 Pneumonitis 和 Hypersensitivity pneumonitis 的各组分子和分母。
+
+R09:
+  - unit_id: trial:NCT04303780:other:gastrointestinal-disorders
+    source: pool
+    reason: CodeBreaK 200 的其他胃肠事件表列出 Diarrhoea 的组别计数，包括多西他赛 37/151 和 AMG 510 70/169。
+
+R10:
+  - unit_id: trial:NCT04685135:overview
+    source: pool
+    reason: KRYSTAL-12 概况给出 5% 报告阈值和其他不良事件从首次给药到最后一次给药后 28 天的观察窗。
+
+R11:
+  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:warnings_and_cautions:5.1
+    source: pool
+    reason: 5.1 列明治疗前、治疗初期和后续的肝功能检查安排，并说明按肝毒性严重程度调整给药。
+  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:warnings_and_cautions:intro
+    source: pool
+    reason: 警告摘要列出前三个月每三周和之后每月的监测安排，以及暂停、减量或永久停药的原则。
+
+R12:
+  - unit_id: label:0b8bf078-34c2-4f45-9012-38a8ac082b01:warnings_and_cautions:5.2
+    source: pool
+    reason: 5.2 指明心电图和电解质的监测时点及适用人群，并规定根据 QTc 延长的严重程度调整给药。
+  - unit_id: label:0b8bf078-34c2-4f45-9012-38a8ac082b01:warnings_and_cautions:intro
+    source: pool
+    reason: 警告摘要说明 QTc 风险人群及合用药患者需要心电图和电解质监测，并概括按严重程度暂停、减量或停药。
+
+R13:
+  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:adverse_reactions_table:table-3
+    source: pool
+    reason: 说明书表 5 的皮疹行列出联合治疗组全等级 87% 和 3 或 4 级 26%。
+  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:adverse_reactions:6.1
+    source: pool
+    reason: 6.1 的 CodeBreaK 300 部分复载表 5，保留了联合治疗组皮疹的两个等级列。
+
+R14:
+  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:warnings_and_cautions:5.2
+    source: pool
+    reason: 5.2 规定疑似 ILD 或肺炎时暂停 LUMAKRAS，排除其他潜在病因后永久停药。
+  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:warnings_and_cautions:intro
+    source: pool
+    reason: 警告摘要单独列出 LUMAKRAS 的 ILD 或肺炎停药条件，涵盖排除其他潜在病因后的处置。
+
+R15:
+  - unit_id: label:0b8bf078-34c2-4f45-9012-38a8ac082b01:adverse_reactions_table:table-2
+    source: pool
+    reason: adagrasib 说明书的 KRYSTAL-1 实验室表给出 ALT 升高全等级 46% 和 3 或 4 级 5%。
+  - unit_id: label:0b8bf078-34c2-4f45-9012-38a8ac082b01:adverse_reactions:6.1
+    source: pool
+    reason: 6.1 的 KRYSTAL-1 实验室异常文字表保留了 ALT 升高一行及两种等级的发生率。

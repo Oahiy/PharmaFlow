@@ -18,6 +18,7 @@ from eval.provenance import recordings_digest
 from eval.runner import run_suite
 from eval.storage import read_summary
 from mcp_servers.lit.config import DEFAULT_RECORDINGS_DIR
+from rag.config import CHUNKS_PATH
 
 
 def reply(content, input_tokens, calls=()):
@@ -156,6 +157,7 @@ async def test_runner_records_two_cases_and_isolates_checkpoints(
     assert recorded["base_url"] == "https://example.invalid/v1"
     assert recorded["cases_sha256"] == suite.sha256
     assert recorded["recordings_sha256"] == recordings_digest(DEFAULT_RECORDINGS_DIR)
+    assert recorded["corpus_sha256"] == sha256(CHUNKS_PATH.read_bytes()).hexdigest()
     assert (
         recorded["system_prompt_sha256"]
         == sha256(model.received[0][0].text.encode("utf-8")).hexdigest()

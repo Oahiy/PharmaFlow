@@ -2,17 +2,25 @@ import asyncio
 import logging
 import os
 import sys
+from contextlib import nullcontext
 from pathlib import Path
+from unittest.mock import Mock
 from urllib.parse import quote_plus
 
 import httpx
 from fastmcp import Client
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
+from agent.mcp_client import lit_env_from_process
 from mcp_servers.lit.config import DEFAULT_RECORDINGS_DIR
 from mcp_servers.lit.http import UpstreamTransport, make_client
-from mcp_servers.lit.models import LabelSectionResult, TrialAdverseEventsResult
+from mcp_servers.lit.models import (
+    LabelSectionResult,
+    SearchEvidenceResult,
+    TrialAdverseEventsResult,
+)
 from mcp_servers.lit.server import create_server
+from rag.retrieval import Retriever
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,7 +43,8 @@ async def test_http_status_error_reaches_mcp_client_without_api_key(caplog):
     mcp = create_server(
         lambda: make_client(
             UpstreamTransport(httpx.MockTransport(reject), api_key=fake_key)
-        )
+        ),
+        retriever_factory=lambda: nullcontext(Mock(spec=Retriever)),
     )
     async with Client(mcp) as client:
         result = await client.call_tool(
@@ -62,6 +71,7 @@ def _stdio_client(cwd: Path, recordings_dir: Path) -> MultiServerMCPClient:
                 "args": ["-m", "mcp_servers.lit.server"],
                 "cwd": str(cwd),
                 "env": {
+                    **lit_env_from_process(),
                     "PYTHONPATH": str(PROJECT_ROOT),
                     "PYTHONDONTWRITEBYTECODE": "1",
                     "FASTMCP_ENV_FILE": os.devnull,
@@ -84,6 +94,7 @@ async def test_codebreak_200_serious_events_over_stdio(tmp_path):
             "search_trials",
             "get_trial_adverse_events",
             "get_label_section",
+            "search_evidence",
         }
         for tool in tools.tools:
             assert tool.inputSchema["required"] == ["request"]
@@ -165,4 +176,25 @@ async def test_replay_miss_reaches_stdio_client(tmp_path):
     assert (
         "https://clinicaltrials.gov/api/v2/studies/NCT04303780"
         in result.content[0].text
+    )
+
+
+async def test_search_evidence_over_stdio(tmp_path):
+    client = _stdio_client(tmp_path, DEFAULT_RECORDINGS_DIR)
+    query = "AMG-510 liver enzyme elevations after treatment"
+    async with asyncio.timeout(30), client.session("lit") as session:
+        result = await session.call_tool(
+            "search_evidence", {"request": {"query": query}}
+        )
+
+    assert not result.isError, result.content
+    evidence = SearchEvidenceResult.model_validate(result.structuredContent)
+    assert evidence.query == query
+    assert evidence.expanded_query == f"{query} sotorasib LUMAKRAS"
+    assert len(evidence.results) == 8
+    scores = [hit.rerank_score for hit in evidence.results]
+    assert scores == sorted(scores, reverse=True)
+    assert all(
+        hit.citation_id.startswith(f"{hit.source_type}:{hit.source_id}:")
+        for hit in evidence.results
     )

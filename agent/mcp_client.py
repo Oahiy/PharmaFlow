@@ -17,7 +17,13 @@ from .config import PROJECT_ROOT
 def lit_env_from_process() -> dict[str, str]:
     return {
         name: os.environ[name]
-        for name in ("LIT_MCP_MODE", "LIT_MCP_RECORDINGS_DIR", "NCBI_API_KEY")
+        for name in (
+            "LIT_MCP_MODE",
+            "LIT_MCP_RECORDINGS_DIR",
+            "NCBI_API_KEY",
+            "QDRANT_URL",
+            "FASTEMBED_CACHE_PATH",
+        )
         if name in os.environ
     }
 

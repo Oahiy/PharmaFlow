@@ -20,7 +20,9 @@ from .requests import label_section_url
 SECTION_BLOCK_LIMIT = 5
 
 
-class _Label(BaseModel):
+class OpenFDALabel(BaseModel):
+    """The sections supplied by openFDA before any tool truncation."""
+
     model_config = ConfigDict(strict=True)
 
     set_id: NonBlank
@@ -45,12 +47,12 @@ class _Meta(BaseModel):
     results: _MatchInfo
 
 
-class _LabelResponse(BaseModel):
+class OpenFDALabelResponse(BaseModel):
     meta: _Meta
-    results: list[_Label] = Field(min_length=1, max_length=1)
+    results: list[OpenFDALabel] = Field(min_length=1, max_length=1)
 
 
-def _section(label: _Label, field: LabelField) -> LabelSection:
+def _section(label: OpenFDALabel, field: LabelField) -> LabelSection:
     blocks: list[str] | None = getattr(label, field)
     if blocks is None:
         return MissingLabelSection(field=field, set_id=label.set_id)
@@ -66,16 +68,24 @@ def _section(label: _Label, field: LabelField) -> LabelSection:
     )
 
 
+async def fetch_label(
+    request: LabelSectionInput, http: httpx.AsyncClient
+) -> OpenFDALabelResponse | None:
+    response = await http.get(label_section_url(request))
+    if response.status_code == 404:
+        return None
+    return OpenFDALabelResponse.model_validate_json(response.content)
+
+
 async def get_label_section(
     request: LabelSectionInput, http: httpx.AsyncClient
 ) -> LabelSectionResult:
-    response = await http.get(label_section_url(request))
-    if response.status_code == 404:
+    source = await fetch_label(request, http)
+    if source is None:
         return LabelSectionResult(
             request=request, total_count=0, returned_count=0, results=[]
         )
 
-    source = _LabelResponse.model_validate_json(response.content)
     (label,) = source.results
     sections = [_section(label, field) for field in request.fields]
     row = DrugLabel(

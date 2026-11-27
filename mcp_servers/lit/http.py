@@ -147,9 +147,13 @@ class Recordings:
         key = f"{request.method} {request.url}"
         return self.directory / f"{hashlib.sha256(key.encode()).hexdigest()}.json"
 
+    def path_for(self, method: str, url: httpx.URL) -> Path:
+        """Resolve the recording filename for an upstream request."""
+        return self._path(httpx.Request(method, _canonical_url(url)))
+
     def contains(self, method: str, url: httpx.URL) -> bool:
         """Check for an existing recording without contacting the upstream."""
-        return self._path(httpx.Request(method, _canonical_url(url))).is_file()
+        return self.path_for(method, url).is_file()
 
     def write(self, response: httpx.Response) -> Path:
         request = response.request

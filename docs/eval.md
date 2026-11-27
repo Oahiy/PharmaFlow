@@ -21,7 +21,9 @@ LANGFUSE_TRACING_ENABLED=true
 
 ```sh
 uv sync --locked
-docker compose up -d postgres
+docker compose up -d --wait postgres qdrant
+uv run --locked --no-env-file python -m rag.download_models
+uv run --offline --locked --no-sync --no-env-file python -m rag.index
 
 LLM_MODEL=deepseek-v4-pro LLM_BASE_URL=https://api.deepseek.com \
   LLM_DISABLE_THINKING=true uv run python -m scripts.check_model
@@ -50,7 +52,7 @@ uv run python -m eval.run --tag v2 &&
 uv run python -m eval.run --summary "$RUN_ID"
 ```
 
-等两轮都完整结束，再执行下面的命令。按终端提示依次粘贴两次运行打印的 UUID，每个 ID 输入后按回车。对比要求用例摘要和录制摘要分别一致。系统提示词和工具定义摘要各显示「一致」「不同」或「缺少记录」，支持比较改动前后的模型输入。逐用例差值为第 2 轮减第 1 轮。judge 分数和 token 任一侧为 `NULL` 时，相应差值为 `NULL`。成功状态按 0 和 1 求差，有 `replay_miss` 的用例成功差值显示 `NULL`。
+等两轮都完整结束，再执行下面的命令。按终端提示依次粘贴两次运行打印的 UUID，每个 ID 输入后按回车。对比要求用例摘要和录制摘要分别一致。系统提示词、工具定义和检索语料摘要各显示「一致」「不同」或「缺少记录」，支持比较改动前后的模型输入。逐用例差值为第 2 轮减第 1 轮。judge 分数和 token 任一侧为 `NULL` 时，相应差值为 `NULL`。成功状态按 0 和 1 求差，有 `replay_miss` 的用例成功差值显示 `NULL`。
 
 ```sh
 printf '第一轮 run_id ' &&
@@ -214,7 +216,7 @@ Judge 按覆盖要求、证据可追溯、口径正确三个布尔项打分，�
 | `eval.cases` | `case_id text` 主键，`category text` 取 `single_tool`、`multi_hop`、`exception`、`self_healing`。每次运行从 YAML 同步。 |
 | `eval.results` | `run_id uuid` 与 `case_id text` 为联合主键，分别引用前两张表。`thread_id uuid` 唯一，`trace_id text` 为 32 位十六进制，`success boolean`、`tools_correct boolean`、`params_valid boolean` 可空、`judge_score smallint` 可空、`failure_type text` 可空、`error_detail jsonb` 可空、`input_tokens bigint` 可空、`elapsed_ms bigint`、`repair_attempts smallint` 可空。 |
 
-失败类型、类别、分数范围、计数与耗时均由 SQL 约束。运行配置记录模型、端点、温度、thinking、步数、回放设置、judge 细则版本与阈值、Git commit、工作区状态、用例清单及四份 SHA-256 摘要。用例和回放摘要对各文件的相对路径和原始内容计算。`system_prompt_sha256` 对 Agent 系统提示词文本计算，`tool_schema_sha256` 对传给 Agent 的工具定义计算，保留工具列表顺序并对 JSON 对象键排序。端点记录省略 URL 中的用户信息、查询参数和片段，配置中无密钥。 [建表 SQL](../eval/schema.sql) · [汇总 SQL](../eval/summary.sql)
+失败类型、类别、分数范围、计数与耗时均由 SQL 约束。运行配置记录模型、端点、温度、thinking、步数、回放设置、judge 细则版本与阈值、Git commit、工作区状态、用例清单及 SHA-256 摘要。用例和回放摘要对各文件的相对路径和原始内容计算。`system_prompt_sha256` 对 Agent 系统提示词文本计算，`tool_schema_sha256` 对传给 Agent 的工具定义计算，保留工具列表顺序并对 JSON 对象键排序。Task 7 起，`corpus_sha256` 对 `chunks.jsonl` 原始字节计算。端点记录省略 URL 中的用户信息、查询参数和片段，配置中无密钥。 [建表 SQL](../eval/schema.sql) · [汇总 SQL](../eval/summary.sql)
 
 `schema.sql` 可重复初始化。已有表新增列或变更具名 `CHECK` 约束时，需执行对应的 `ALTER TABLE` 迁移。
 
@@ -360,6 +362,123 @@ uv run --no-sync python -m eval.run --tag v3-self-healing --cases eval/cases_sel
 **基础用例两轮合计通过 23/24（95.8%）。** E01 两轮均通过。S01 和 S02 分别使用 `compute_properties` 和 `filter_druglike`。第二轮 E02 正确指出编号格式问题，随后附上了示例编号 `NCT01234567`，因此触发禁止示例编号的规则（`rule_failed`，trace ID `7294fe383e89a7b3522cff6946deb281`）。基础用例与回放摘要匹配 v2 第二轮，v3 两轮平均每例输入 7,152.2 token，比 v2 第二轮增加 1,429.2 个（25.0%）。 [E02 用例](../eval/cases/E02.yaml)
 
 **自愈评测共 3 条用例、2 轮，3 轮内恢复率为 6/6（100%）。** H01 两轮均在 2 次执行内完成，诊断和修正都传入原始 `candidates` ID。H02 两轮各用 1 次，H03 两轮分别用 1 次和 2 次。
+
+## Task 7 检索评测
+
+证据语料由 `data/corpus_recordings/` 回放构建。基础 Agent 回归继续使用 `data/lit_recordings/` 的摘要作为对比条件。 [语料构建](lit-mcp.md#task-7-证据语料)
+
+复核题目后，用已建成的 `kras_evidence` 生成候选池。先按业务目的拟中文问题，再翻译为英文检索词。六词连续重合检查在单测中比较规范化的英文检索词和全部语料片段。Recall@8 和 MRR 衡量给定人工英文检索词时的检索质量。Agent 实际生成的英文查询在中文演示中核对。 [查询集](../eval/retrieval/queries.yaml) · [中文演示](../README.md#演示证据检索)
+
+```sh
+uv run --offline --locked --no-sync --no-env-file python -m eval.retrieval pool
+```
+
+候选池合并 dense、hybrid 和 hybrid + rerank 的前 10 条，按片段 ID 去重，固定种子打乱后写入 `eval/retrieval/pool.jsonl`。每行记录查询、相关性单元和片段。原方法、名次和得分在池内隐藏。所有方法都漏召的证据可能在池中缺失，使 Recall@8 的分母小于语料中实际相关单元数。标注可补充池外相关单元并标明来源。
+
+2026-11-27 的候选池包含 259 个查询与片段对，覆盖全部 15 条查询。池内片段已与对应语料逐条核对。 [候选池](../eval/retrieval/pool.jsonl)
+
+### qrels 标注规则
+
+确认语料中是否有答案以及判断相关性时，都检查文献、试验和说明书。查询类别按相关证据的实际来源填写。片段能回答问题的一部分即算相关，其所属单元可以标为相关。同一文献可为多条查询提供相关证据。
+
+`qrels.yaml` 以查询 ID 为键。每个查询至少需要一条标注，`unit_id` 对应语料中一个或多个片段，`reason` 写一句相关理由。`source: pool` 表示候选池，`source: corpus` 表示从池外语料补充。初稿共 23 个查询与相关单元对，其中 R01 的 CodeBreaK 200 主论文和 R04 的 KRYSTAL-1 单药论文从池外补充。 [标注初稿](../eval/retrieval/qrels.yaml)
+
+### 两轮检索评测
+
+复核标注后，从包含 Task 7 的干净工作区运行。复用现有 Qdrant 索引和模型缓存，并沿用上次评测的 Postgres 配置。先跑集成测试，再将两轮检索结果写入 Postgres，并比较两轮报告。
+
+```zsh
+(
+  set -e -o pipefail
+  if [ -n "$(git status --porcelain=v1)" ]; then
+    git status --short
+    printf '%s\n' '请在包含 Task 7 的干净工作区运行。' >&2
+    exit 1
+  fi
+
+  git rev-parse HEAD
+  task7_reports=$(mktemp -d)
+  printf '评测日志目录 %s\n' "$task7_reports"
+  uv run --offline --locked --no-sync --no-env-file pytest tests/integration
+  uv run --offline --locked --no-sync --no-env-file python -m eval.retrieval run |
+    tee "$task7_reports/run1.txt"
+  uv run --offline --locked --no-sync --no-env-file python -m eval.retrieval run |
+    tee "$task7_reports/run2.txt"
+
+  diff -u \
+    <(sed -E -e '/^run_id /d' -e 's/^运行 [0-9a-f-]+ /运行 /' "$task7_reports/run1.txt") \
+    <(sed -E -e '/^run_id /d' -e 's/^运行 [0-9a-f-]+ /运行 /' "$task7_reports/run2.txt")
+)
+```
+
+验收时保留提交 SHA、集成测试摘要和两个 `run_id`。两轮都应显示「完整」，每轮覆盖 15 条查询与 3 种方法。末尾 `diff` 无输出表示 Recall@8、MRR 和逐查询的引用顺序一致。查询历史汇总时将 `TASK7_RETRIEVAL_RUN_ID` 设为目标 `run_id`。
+
+```sh
+uv run --offline --locked --no-sync --no-env-file python -m eval.retrieval summary "$TASK7_RETRIEVAL_RUN_ID"
+```
+
+Recall@8 用前八条命中的不同相关单元数除以该查询相关单元总数。MRR 取各查询首个相关结果名次的倒数后平均，前八条没有相关结果时倒数排名为 0。`eval.retrieval_runs` 保存 Git commit、起止时间、三份输入摘要、模型名称、候选上限、别名和同分排序规则。`eval.retrieval_results` 保存每个查询和方法的名次、相关单元计数及排名后的片段引用 ID。命令打印各方法的 SQL 平均值及逐条查询结果。两次同配置运行可核对逐条的引用 ID 与指标。 [建表 SQL](../eval/schema.sql) · [检索汇总 SQL](../eval/retrieval/summary.sql)
+
+### 调整同分排序前的两轮实测
+
+第 1 轮 `07383caf-5f4d-42fe-baa6-4b3d442dad01` 和第 2 轮 `ed9f1067-5a85-4c5b-8714-06bab77bbfe0` 均完整结束，每轮覆盖 15 条查询与 3 种方法。按当前语料和标注逐条复算，两轮的 90 条明细及汇总均校验通过。
+
+| 方法 | 第 1 轮 Recall@8 | 第 2 轮 Recall@8 | 第 1 轮 MRR | 第 2 轮 MRR |
+| --- | ---: | ---: | ---: | ---: |
+| `dense` | 0.5667 | 0.5667 | 0.4883 | 0.4883 |
+| `hybrid` | 0.8667 | 0.8667 | 0.7000 | 0.6889 |
+| `hybrid_rerank` | 0.8667 | 0.8667 | 0.8333 | 0.8333 |
+
+`dense` 和 `hybrid_rerank` 的逐条引用顺序一致。`hybrid` 的 R02、R03、R04、R10、R12 和 R15 的前八条出现顺序变化。R02 的第八名还更换了片段。所有查询的相关单元命中数一致，R02 的首个相关结果从第 2 名变为第 3 名，导致 `hybrid` 的平均 MRR 下降约 0.0111。
+
+对同一语料索引只读复查 R02，`pubmed:40783289:2` 与说明书 5.4 片段的 RRF 分数均为 0.5，两者顺序在请求之间互换。第 7 至第 9 名的三个片段同得 0.2，顺序变化会改变第 8 名截断处的引用。三种方法两轮都漏召 R01 和 R04 的相关单元。
+
+增加稳定排序后，Qdrant 返回两路各 30 条预取所产生的全部融合候选。客户端以 RRF 分数降序、点 ID 升序取前 30 条，处理跨截断位置的同分。新运行在配置记录 `rrf_tie_break=point_id_ascending`。使用真实缓存模型和同一 Qdrant 索引做了两轮只读复验，每轮 45 条结果的指标和引用顺序完全一致，R02 在 `hybrid` 中首个相关结果位于第 2 名。三组指标与上表第 1 轮列一致。入库复跑使用本节的两轮检索命令。
+
+### 基础用例回归
+
+在包含 Task 7 改动的干净工作区，沿用 Task 6 正式基础评测的 DeepSeek 和 Langfuse 配置运行两轮默认的 12 条基础用例。命令先检查工作区。两轮完成后，将打印的两个 `run_id` 粘贴到对比命令的提示中。
+
+```sh
+if [ -n "$(git status --porcelain=v1)" ]; then
+  git status --short
+  printf '%s\n' '请在包含 Task 7 的干净工作区运行。' >&2
+else
+  git rev-parse HEAD &&
+    uv run --offline --locked --no-sync --no-env-file python -m eval.run --tag v4 &&
+    uv run --offline --locked --no-sync --no-env-file python -m eval.run --tag v4
+fi
+```
+
+```sh
+printf 'Task 7 第 1 轮 run_id ' &&
+  IFS= read -r TASK7_AGENT_RUN_1 &&
+  printf 'Task 7 第 2 轮 run_id ' &&
+  IFS= read -r TASK7_AGENT_RUN_2 &&
+  uv run --offline --locked --no-sync --no-env-file python -m eval.compare \
+    25fb9fa3-6ac1-4039-aeb5-3dc864641969 "$TASK7_AGENT_RUN_1" &&
+  uv run --offline --locked --no-sync --no-env-file python -m eval.compare \
+    25fb9fa3-6ac1-4039-aeb5-3dc864641969 "$TASK7_AGENT_RUN_2"
+```
+
+### 开发期基础评测
+
+贴回的两轮 `v4` 在 `53c3c2a635c6e7ecb07d20e488f9e48a1f221826` 的有改动工作区执行。两轮各有 12 条结果入库并可评分，回放未命中和缺 token 均为 0，工具选择和参数合法率均为 100%。
+
+| 轮次 | Run ID | 任务成功 | 平均输入 token | 平均耗时（ms） |
+| --- | --- | ---: | ---: | ---: |
+| Task 6 正式第 2 轮 | `25fb9fa3-6ac1-4039-aeb5-3dc864641969` | 11/12 | 7,152.0 | 5,066.1 |
+| Task 7 开发期第 1 轮 | `ebeade95-cef9-45bd-bd7e-03a728e3cffc` | 12/12 | 7,553.2 | 9,960.6 |
+| Task 7 开发期第 2 轮 | `39aa38a3-a334-42bb-b2cf-4bc22538e1a0` | 12/12 | 7,554.3 | 5,246.0 |
+
+两轮开发期评测的耗时差集中在单工具组，该组平均耗时分别为 14,082.0 和 4,422.3 ms。使用实际 `run_id` 对 Postgres 中的结果逐例比较，两轮均有 12 条匹配用例。相对 Task 6 第 2 轮，两轮的 E02 均从失败变为成功，其余 11 条均继续通过。
+
+```sh
+uv run --offline --locked --no-sync --no-env-file python -m eval.compare \
+  25fb9fa3-6ac1-4039-aeb5-3dc864641969 ebeade95-cef9-45bd-bd7e-03a728e3cffc
+uv run --offline --locked --no-sync --no-env-file python -m eval.compare \
+  25fb9fa3-6ac1-4039-aeb5-3dc864641969 39aa38a3-a334-42bb-b2cf-4bc22538e1a0
+```
 
 ## 打开 Langfuse trace
 

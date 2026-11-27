@@ -16,6 +16,7 @@ from eval.storage import finish_run, save_result, setup_schema, start_run
         "recordings_sha256",
         "system_prompt_sha256",
         "tool_schema_sha256",
+        "corpus_sha256",
         "unfinished",
         "missing_result",
     ],
@@ -31,7 +32,11 @@ async def test_comparison_checks_inputs_and_derives_per_case_deltas(
         {"case_id": b, "category": "single_tool"},
     ]
     config = {"cases_sha256": "cases", "recordings_sha256": "recordings"}
-    input_digests = {"system_prompt_sha256": "prompt", "tool_schema_sha256": "tools"}
+    input_digests = {
+        "system_prompt_sha256": "prompt",
+        "tool_schema_sha256": "tools",
+        "corpus_sha256": "corpus",
+    }
 
     async with open_connection_pool(database_url) as pool, pool.connection() as conn:
         await setup_schema(conn)

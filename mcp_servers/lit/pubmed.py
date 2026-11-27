@@ -1,6 +1,8 @@
 """Validate PubMed E-utilities responses."""
 
-from typing import Annotated, Self
+import re
+from collections.abc import Sequence
+from typing import Annotated, Literal, Self
 from xml.etree import ElementTree
 
 import httpx
@@ -37,52 +39,70 @@ class PubMedSearchResponse(BaseModel):
     hits: PubMedHits = Field(validation_alias="esearchresult")
 
 
-class _ArticleFields(BaseModel):
+class PubMedAbstractSection(BaseModel):
+    label: str | None
+    text: str
+
+    @property
+    def labeled_text(self) -> str:
+        return f"{self.label}: {self.text}" if self.label is not None else self.text
+
+
+class PubMedArticleRecord(BaseModel):
+    """Source fields from EFetch before any abstract truncation."""
+
     pmid: Pmid
+    record_type: Literal["journal_article", "book_article"]
     title: str | None
-    abstract: str | None
+    year: int | None
+    abstract_sections: list[PubMedAbstractSection] | None
 
 
-def _abstract_text(sections: list[ElementTree.Element]) -> str | None:
-    if not sections:
+def _publication_year(date: ElementTree.Element | None) -> int | None:
+    if date is None:
         return None
-    paragraphs = []
-    for section in sections:
-        text = "".join(section.itertext()).strip()
-        label = section.get("Label")
-        paragraphs.append(f"{label}: {text}" if label is not None else text)
-    return "\n\n".join(paragraphs)
+    year = date.findtext("Year")
+    if year is not None and re.fullmatch(r"[0-9]{4}", year.strip()):
+        return int(year)
+    medline_date = date.findtext("MedlineDate")
+    if medline_date is not None and re.match(r"[0-9]{4}", medline_date):
+        return int(medline_date[:4])
+    return None
 
 
-def _article(node: ElementTree.Element) -> PubMedArticle:
+def _article(node: ElementTree.Element) -> PubMedArticleRecord:
     if node.tag == "PubmedArticle":
         record_type = "journal_article"
         pmid_path = "MedlineCitation/PMID"
         content_path = "MedlineCitation/Article"
+        pubdate_path = "Journal/JournalIssue/PubDate"
     elif node.tag == "PubmedBookArticle":
         record_type = "book_article"
         pmid_path = "BookDocument/PMID"
         content_path = "BookDocument"
+        pubdate_path = "Book/PubDate"
     else:
         raise ValueError(f"Unexpected PubMed EFetch record {node.tag}: {node.text!r}")
 
     title = node.find(f"{content_path}/ArticleTitle")
-    source = _ArticleFields(
+    sections = [
+        PubMedAbstractSection(
+            label=section.get("Label"), text="".join(section.itertext()).strip()
+        )
+        for section in node.findall(f"{content_path}/Abstract/AbstractText")
+    ]
+    return PubMedArticleRecord(
         pmid=node.findtext(pmid_path),
-        title="".join(title.itertext()).strip() if title is not None else None,
-        abstract=_abstract_text(node.findall(f"{content_path}/Abstract/AbstractText")),
-    )
-    return PubMedArticle(
-        pmid=source.pmid,
         record_type=record_type,
-        title=source.title,
-        abstract=TextExcerpt.from_text(source.abstract)
-        if source.abstract is not None
-        else None,
+        title="".join(title.itertext()).strip() if title is not None else None,
+        year=_publication_year(node.find(f"{content_path}/{pubdate_path}")),
+        abstract_sections=sections if sections else None,
     )
 
 
-def parse_pubmed_articles(body: bytes, pmids: list[str]) -> list[PubMedArticle]:
+def parse_pubmed_articles(
+    body: bytes, pmids: Sequence[str]
+) -> list[PubMedArticleRecord]:
     root = ElementTree.fromstring(body)
     if root.tag != "PubmedArticleSet":
         raise ValueError(f"Unexpected PubMed EFetch response {root.tag}: {root.text!r}")
@@ -95,6 +115,20 @@ def parse_pubmed_articles(body: bytes, pmids: list[str]) -> list[PubMedArticle]:
     return [by_pmid[pmid] for pmid in pmids]
 
 
+def _tool_article(source: PubMedArticleRecord) -> PubMedArticle:
+    abstract = None
+    if source.abstract_sections is not None:
+        abstract = TextExcerpt.from_text(
+            "\n\n".join(section.labeled_text for section in source.abstract_sections)
+        )
+    return PubMedArticle(
+        pmid=source.pmid,
+        record_type=source.record_type,
+        title=source.title,
+        abstract=abstract,
+    )
+
+
 async def search_pubmed(
     request: PubMedSearchInput, http: httpx.AsyncClient
 ) -> PubMedSearchResult:
@@ -104,7 +138,10 @@ async def search_pubmed(
     rows = []
     if pmids:
         response = await http.get(pubmed_fetch_url(pmids))
-        rows = parse_pubmed_articles(response.content, pmids)
+        rows = [
+            _tool_article(article)
+            for article in parse_pubmed_articles(response.content, pmids)
+        ]
     return PubMedSearchResult(
         request=request,
         total_count=hits.total_count,

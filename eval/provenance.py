@@ -13,6 +13,7 @@ from pydantic import JsonValue
 from agent.config import PROJECT_ROOT, LLMSettings
 from agent.llm import TEMPERATURE
 from mcp_servers.lit.config import LitSettings
+from rag.config import CHUNKS_PATH
 
 from .cases import CaseSuite
 from .digests import content_digest
@@ -65,6 +66,7 @@ def run_config(
         ),
         "cases_sha256": suite.sha256,
         "recordings_sha256": recordings_digest(lit.recordings_dir),
+        "corpus_sha256": sha256(CHUNKS_PATH.read_bytes()).hexdigest(),
         "system_prompt_sha256": sha256(system_prompt.encode("utf-8")).hexdigest(),
         "tool_schema_sha256": sha256(tool_schema_json.encode("utf-8")).hexdigest(),
     }

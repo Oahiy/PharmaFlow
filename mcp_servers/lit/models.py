@@ -2,12 +2,21 @@
 
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, StringConstraints
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FiniteFloat,
+    HttpUrl,
+    NonNegativeInt,
+    StringConstraints,
+)
 
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 NctId = Annotated[str, StringConstraints(pattern=r"^NCT[0-9]{8}$")]
 TrialPhase = Literal["EARLY_PHASE1", "PHASE1", "PHASE2", "PHASE3", "PHASE4", "NA"]
 EventCategory = Literal["all", "serious", "other"]
+type SourceType = Literal["pubmed", "trial", "label"]
 LabelField = Literal[
     "adverse_reactions",
     "adverse_reactions_table",
@@ -253,3 +262,39 @@ class LabelSectionResult(ResultList[DrugLabel]):
     """The label search criteria, match count, and selected label if available."""
 
     request: LabelSectionInput
+
+
+class SearchEvidenceInput(BaseModel):
+    """English query terms for the local evidence corpus."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: NonBlank = Field(
+        description="Semantic query in English. Translate Chinese questions before calling."
+    )
+
+
+class EvidenceMatch(BaseModel):
+    """A reranked corpus excerpt with its citation and source metadata."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    citation_id: NonBlank
+    source_type: SourceType
+    source_id: NonBlank
+    title: str | None
+    year: int | None
+    section: NonBlank
+    text: NonBlank
+    rerank_score: FiniteFloat
+    source_url: HttpUrl
+
+
+class SearchEvidenceResult(BaseModel):
+    """Original and expanded queries with evidence ranked by cross-encoder score."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: NonBlank
+    expanded_query: NonBlank
+    results: list[EvidenceMatch]

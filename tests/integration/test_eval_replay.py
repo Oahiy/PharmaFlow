@@ -1,6 +1,6 @@
 import asyncio
 
-from agent.mcp_client import open_mcp_tools
+from agent.mcp_client import lit_env_from_process, open_mcp_tools
 from eval.cases import (
     LIT_TOOLS,
     ToolCount,
@@ -17,6 +17,7 @@ async def test_eval_http_paths_replay_through_stdio(monkeypatch):
     monkeypatch.setenv("LIT_MCP_MODE", "live")
     monkeypatch.setenv("LIT_MCP_RECORDINGS_DIR", "/not-the-recordings")
     replay_env = {
+        **lit_env_from_process(),
         "LIT_MCP_MODE": "replay",
         "LIT_MCP_RECORDINGS_DIR": str(DEFAULT_RECORDINGS_DIR),
         "NCBI_API_KEY": "",

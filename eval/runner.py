@@ -40,6 +40,7 @@ from agent.state import AgentState
 from agent.tracing import LANGFUSE_KEYS, CallbackFactory, trace_config
 from mcp_servers.chem.models import ExportPropertiesResult
 from mcp_servers.lit.config import DEFAULT_RECORDINGS_DIR, LitSettings
+from rag.config import RagSettings
 from sandbox.models import RUN_PYTHON
 from sandbox.tool import create_run_python_tool, is_repairable_failure, sandbox_config
 
@@ -292,10 +293,13 @@ async def run_suite(
 ) -> tuple[UUID, list[DictRow]]:
     suite = load_cases(case_directory)
     lit = LitSettings(mode="replay", recordings_dir=recordings_dir.resolve())
+    rag = RagSettings.from_env()
     lit_env = {
         "LIT_MCP_MODE": lit.mode,
         "LIT_MCP_RECORDINGS_DIR": str(lit.recordings_dir),
         "NCBI_API_KEY": "",
+        "QDRANT_URL": str(rag.qdrant_url),
+        "FASTEMBED_CACHE_PATH": str(rag.cache_path),
     }
     run_id, user_id = uuid4(), uuid4()
     commit = git_commit()

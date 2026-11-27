@@ -1,12 +1,18 @@
 # PharmaFlow Agent
 
-## 在本地运行 Task 6
+## 构建 Task 7 证据语料
 
-在项目根目录安装依赖，启动 Postgres 并构建沙盒镜像。API、CLI 和自愈评测使用本机 Docker daemon 执行脚本。
+从项目根目录录制 PubMed 摘要、准备 FastEmbed 缓存，再回放构建 `data/corpus/chunks.jsonl`。随仓库提供的试验和说明书录制也会用于构建。 [录制与构建命令](docs/lit-mcp.md#task-7-证据语料)
+
+## 在本地运行
+
+在项目根目录安装依赖，启动 Postgres 和 Qdrant。使用仓库中的 `chunks.jsonl` 建好证据索引。API、CLI 和自愈评测使用本机 Docker daemon 执行脚本。
 
 ```sh
 uv sync --locked
-docker compose up -d postgres
+docker compose up -d --wait postgres qdrant
+uv run --locked --no-env-file python -m rag.download_models
+uv run --offline --locked --no-sync --no-env-file python -m rag.index
 docker build -t pharmaflow-sandbox:1 sandbox
 ```
 
@@ -22,6 +28,14 @@ uv run streamlit run ui/app.py
 容器可写层共享 Docker Desktop 的磁盘空间，单次脚本运行可能耗尽可用空间。产物大小限制在从容器取回 PNG 时生效。
 
 如果将 API 容器接入宿主机的 `/var/run/docker.sock`，API 将取得足以控制宿主机的 Docker 权限。这个部署方式仅用于本地演示。生产环境可采用 gVisor、Firecracker 或独立的托管沙盒服务。
+
+## 演示证据检索
+
+在聊天中发送下列问题。展开执行详情，查看 Agent 传给 `search_evidence` 的英文检索词和工具结果预览。用侧栏的会话 ID 请求 `GET /api/threads/{thread_id}`，可查看展开后的查询和完整证据片段。
+
+> 跨文献、试验和说明书查一下 sotorasib 的肝毒性证据。请附上你引用的英文原文片段、片段 ID 和原文链接。
+
+核对答复里的片段 ID 和链接与工具返回一致。演示时附上 dense、混合召回和混合召回加重排的 Recall@8 和 MRR。 [检索评测](docs/eval.md#task-7-检索评测)
 
 ## 演示代码自愈与图表
 
@@ -40,7 +54,7 @@ print(data["QED"].nlargest(10))
 
 ## 验收与计时
 
-`pytest` 默认排除带 `docker` 标记的测试。显式传入 `-m docker` 运行容器测试。Postgres 集成测试使用已启动的数据库。
+`pytest` 默认排除带 `docker` 标记的测试。显式传入 `-m docker` 运行容器测试。集成测试使用已启动的 Postgres、构建好的 Qdrant 索引和 FastEmbed 缓存。
 
 ```sh
 uv run --no-sync --no-env-file pytest tests/unit
