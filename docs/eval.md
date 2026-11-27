@@ -549,6 +549,28 @@ uv run --offline --locked --no-sync --no-env-file python -m eval.compare "$TASK8
 
 Reporter 把未核验的编号追加到答复末尾，评测同时保存到 `error_detail.reporter_unverified_ids`。代码识别 `NCT` 加 8 位数字、带 `PMID` 前缀的数字、片段 `citation_id` 和 UUID 格式的说明书 `set_id`。用户原文已有的编号不计入未核验项。E02 规定答复中不得出现有效格式的 NCT 示例，正文或末尾追加说明出现编造的 `NCT` 加 8 位数字时，此例按现有规则失败。
 
+### 正式评测结果
+
+2026-11-27 在干净提交 `5f6b01b3de24e00ab1987efa5a407fd75219b368` 完成四轮基础评测。四轮使用 `deepseek-v4-pro` 和同一份回放及语料，启用结构化回传，关闭字段裁剪和历史摘要。48 条结果全部入库且可评分，输入 token 记录齐全。两轮单图的系统提示词、工具定义和语料摘要均与 Task 7 的 `39aa38a3` 一致。
+
+| 轮次 | Run ID | 通过 | 平均输入 token | 平均耗时（ms） |
+| --- | --- | ---: | ---: | ---: |
+| 单图第 1 轮 | `1b7282ca-12ac-4363-82af-54beed67e397` | 12/12 | 7,553.8 | 5,652.1 |
+| 单图第 2 轮 | `5b1084b0-576a-416d-a93f-245839fc3c82` | 12/12 | 7,553.3 | 7,483.0 |
+| 多图第 1 轮 | `d1d7315d-2307-4fdc-8884-35b6cbd66b42` | 8/12 | 6,242.5 | 13,932.8 |
+| 多图第 2 轮 | `05ed0e2f-2ff4-459f-9f58-ecea12963191` | 8/12 | 6,703.2 | 12,830.4 |
+
+合并两轮后，单图和多图的平均输入 token 分别为 7,553.5 和 6,472.8，多图低 14.31%。成功率从 100%（24/24）降至 66.7%（16/24），平均耗时从 6.57 秒增至 13.38 秒。六条单工具用例在两轮多图中均通过。
+
+| 两轮均失分的用例 | 入库原因 | 观察到的调用 |
+| --- | --- | --- |
+| E01 | `wrong_tool` | 调用 `run_python`，缺少 `compute_properties`。 |
+| E03 | `wrong_tool` | 调用 `search_evidence`，缺少 `get_label_section`。 |
+| M02 | `invalid_args` | 说明书查询将药名传为 `sotorasib`，预期为 `adagrasib`。 |
+| M03 | `wrong_tool` | 两轮均额外调用 `search_evidence`。第二轮额外调用的两次 `search_trials` 均未命中回放。 |
+
+`deepseek-flash` 通过强制工具调用、结构化输出、温度采样和带工具的多轮对话探针。README 的混合问题通过真实 API 执行，`search_evidence` 和 `compute_properties` 均成功。Langfuse trace `3f90c3a424c872eeaf1325d16b209359` 中，`LitResearcher` 与 `MolAnalyst` 的执行时间重叠 5.612 秒，随后依次执行 Critic 和 Reporter。
+
 ## 打开 Langfuse trace
 
 正式评测首先检查追踪已开启、两个 key 已填写，随后调用 `auth_check()`。退出时用同一个默认客户端 flush。API 默认也在启动时验证凭据，关闭 API 追踪可设置 `LANGFUSE_TRACING_ENABLED=false`。两者的 session 都对应 `thread_id`。
