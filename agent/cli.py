@@ -1,4 +1,4 @@
-"""Run the persistent ReAct baseline with `uv run python -m agent.cli`."""
+"""Run persistent PharmaFlow chat with `uv run python -m agent.cli`."""
 
 import argparse
 import asyncio
@@ -14,13 +14,18 @@ async def chat(settings: AgentSettings, thread_id: str, max_steps: int) -> None:
 
     from sandbox.tool import create_run_python_tool
 
-    from .graph import STEP_LIMIT_MESSAGE, build_graph, resume_config
-    from .llm import create_llm
+    from .graph import (
+        STEP_LIMIT_MESSAGE,
+        build_graph,
+        resume_config,
+        turn_recursion_limit,
+    )
+    from .llm import create_llm, create_summary_llm
     from .mcp_client import lit_env_from_process, open_mcp_tools
     from .persistence import open_connection_pool, setup_checkpointer
-    from .state import AgentState
+    from .state import TurnInput
 
-    def print_reply(state: AgentState) -> None:
+    def print_reply(state: TurnInput) -> None:
         last_message = state["messages"][-1]
         if isinstance(last_message, ToolMessage):
             print(f"PharmaFlow> {STEP_LIMIT_MESSAGE}")
@@ -30,20 +35,28 @@ async def chat(settings: AgentSettings, thread_id: str, max_steps: int) -> None:
 
     model = create_llm(settings.llm)
     thread_config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-    config: RunnableConfig = {
-        **thread_config,
-        "recursion_limit": 2 * max_steps + 1,
-    }
     async with open_connection_pool(settings.database_url.get_secret_value()) as pool:
         checkpointer = await setup_checkpointer(pool)
         async with open_mcp_tools(lit_env=lit_env_from_process()) as tools:
-            graph = build_graph(model, [*tools, create_run_python_tool()], checkpointer)
+            graph = build_graph(
+                model,
+                [*tools, create_run_python_tool()],
+                checkpointer,
+                settings=settings.graph,
+                summary_model=create_summary_llm(settings),
+            )
+            config: RunnableConfig = {
+                **thread_config,
+                "recursion_limit": turn_recursion_limit(graph, max_steps),
+            }
             print(f"会话 ID：{thread_id}。下次可通过 --thread-id 续聊。")
             snapshot = await graph.aget_state(thread_config)
             if snapshot.next:
                 print("正在从检查点恢复上一轮对话。")
                 print_reply(
-                    await graph.ainvoke(None, resume_config(thread_config, snapshot))
+                    await graph.ainvoke(
+                        None, await resume_config(graph, thread_config, snapshot)
+                    )
                 )
 
             while True:
@@ -53,7 +66,7 @@ async def chat(settings: AgentSettings, thread_id: str, max_steps: int) -> None:
                     return
                 if not question:
                     continue
-                turn: AgentState = {
+                turn: TurnInput = {
                     "messages": [HumanMessage(content=question)],
                     "step_count": 0,
                     "max_steps": max_steps,
@@ -62,10 +75,13 @@ async def chat(settings: AgentSettings, thread_id: str, max_steps: int) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="PharmaFlow ReAct 交互式会话")
+    parser = argparse.ArgumentParser(description="PharmaFlow 交互式会话")
     parser.add_argument("--thread-id", help="要继续的会话 ID")
     parser.add_argument(
-        "--max-steps", type=int, default=10, help="每轮最多调用模型的次数"
+        "--max-steps",
+        type=int,
+        default=10,
+        help="单 Agent 或每个 worker 的 ReAct 模型调用上限",
     )
     args = parser.parse_args()
     if args.max_steps < 1:

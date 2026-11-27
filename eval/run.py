@@ -9,7 +9,7 @@ from agent.config import AgentSettings, DatabaseSettings, load_environment
 
 
 async def evaluate(tag: str, *, case_directory: Path | None = None) -> None:
-    from agent.llm import create_llm
+    from agent.llm import create_llm, create_summary_llm
     from agent.tracing import langfuse_callback, open_langfuse
 
     from .cases import CASE_DIRECTORY
@@ -24,6 +24,7 @@ async def evaluate(tag: str, *, case_directory: Path | None = None) -> None:
                 settings,
                 tag=tag,
                 model=create_llm(settings.llm),
+                summary_model=create_summary_llm(settings),
                 judge=build_judge(create_llm(settings.llm)),
                 callback_factory=langfuse_callback,
                 case_directory=CASE_DIRECTORY

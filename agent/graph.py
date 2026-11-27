@@ -1,11 +1,11 @@
 """Build a ReAct loop with explicit routing and a per-turn model call limit."""
 
-from typing import Literal
+from typing import Literal, TypedDict
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
-    AnyMessage,
+    BaseMessage,
     HumanMessage,
     SystemMessage,
     ToolMessage,
@@ -13,6 +13,7 @@ from langchain_core.messages import (
 from langchain_core.messages.tool import ToolCall
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -22,7 +23,9 @@ from langgraph.types import Command, StateSnapshot
 from sandbox.models import MAX_REPAIR_ROUNDS, REPAIR_LIMIT_MESSAGE, RUN_PYTHON
 from sandbox.tool import is_repairable_failure, sandbox_config
 
-from .state import AgentState
+from .config import GraphSettings
+from .context import DATA_INSTRUCTIONS, prepare_input, render_prompt
+from .state import AgentState, ChatMessage, HistorySummary, TurnInput
 
 SYSTEM_PROMPT = SystemMessage(
     content=(
@@ -42,20 +45,29 @@ SYSTEM_PROMPT = SystemMessage(
 )
 STEP_LIMIT_MESSAGE = "已达到本轮步数上限，跳过这次工具调用。"
 PARALLEL_SANDBOX_MESSAGE = "每条回复只能执行一次 run_python，请等该次执行结束。"
+MULTI_GRAPH_NAME = "PharmaFlowMulti"
+MAX_CRITIC_RETURNS = 2
+DEFAULT_GRAPH_SETTINGS = GraphSettings()
 
 type ToolUpdates = (
     dict[str, list[ToolMessage]] | list[Command | dict[str, list[ToolMessage]]]
 )
 
 
+class ToolState(TypedDict):
+    messages: list[ChatMessage]
+
+
 def route_after_agent(state: AgentState) -> Literal["tools", "__end__"]:
     if state["step_count"] >= state["max_steps"]:
         return END
-    reply = state["messages"][-1]
-    assert isinstance(reply, AIMessage)
-    if reply.tool_calls or reply.invalid_tool_calls:
-        return "tools"
-    return END
+    return "tools" if requests_tools(state["messages"][-1]) else END
+
+
+def requests_tools(message: ChatMessage) -> bool:
+    return isinstance(message, AIMessage) and bool(
+        message.tool_calls or message.invalid_tool_calls
+    )
 
 
 def _invalid_tool_results(reply: AIMessage) -> list[ToolMessage]:
@@ -74,7 +86,7 @@ def _invalid_tool_results(reply: AIMessage) -> list[ToolMessage]:
     return results
 
 
-def _sandbox_failures_in_turn(messages: list[AnyMessage]) -> int:
+def _sandbox_failures_in_turn(messages: list[ChatMessage]) -> int:
     failures = 0
     for message in reversed(messages):
         if isinstance(message, HumanMessage):
@@ -94,103 +106,195 @@ def _append_tool_results(
     return {"messages": [*updates["messages"], *results]}
 
 
-def resume_config(
-    thread_config: RunnableConfig, snapshot: StateSnapshot
+def is_multi_graph(graph: CompiledStateGraph) -> bool:
+    return graph.name == MULTI_GRAPH_NAME
+
+
+def react_recursion_limit(max_steps: int) -> int:
+    return 2 * max_steps + 1
+
+
+def turn_recursion_limit(graph: CompiledStateGraph, max_steps: int) -> int:
+    if is_multi_graph(graph):
+        # Planner, (workers + Critic) per round, Reporter, graph input.
+        return 2 * (1 + MAX_CRITIC_RETURNS) + 3
+    return react_recursion_limit(max_steps)
+
+
+async def resume_config(
+    graph: CompiledStateGraph, thread_config: RunnableConfig, snapshot: StateSnapshot
 ) -> RunnableConfig:
     """Use the pending turn's original model-call budget when resuming it."""
-    config = thread_config.copy()
-    # The initial input checkpoint can precede the write to max_steps.
-    if snapshot.next != (START,):
-        config["recursion_limit"] = 2 * snapshot.values["max_steps"] + 1
-    return config
+    if is_multi_graph(graph):
+        return {**thread_config, "recursion_limit": turn_recursion_limit(graph, 0)}
+    state = (
+        await unstarted_turn(graph, snapshot)
+        if snapshot.next == (START,)
+        else snapshot.values
+    )
+    return {
+        **thread_config,
+        "recursion_limit": react_recursion_limit(state["max_steps"]),
+    }
+
+
+async def unstarted_turn(
+    graph: CompiledStateGraph, snapshot: StateSnapshot
+) -> TurnInput:
+    """Read the saved input before LangGraph writes it to the State channels."""
+    checkpointer = graph.checkpointer
+    assert isinstance(checkpointer, BaseCheckpointSaver)
+    saved = await checkpointer.aget_tuple(snapshot.config)
+    assert saved is not None
+    return saved.checkpoint["channel_values"][START]
+
+
+def react_reply(reply: AIMessage, step_count: int, max_steps: int) -> list[ChatMessage]:
+    call_ids = [call["id"] for call in (*reply.tool_calls, *reply.invalid_tool_calls)]
+    if None in call_ids or "" in call_ids or len(set(call_ids)) != len(call_ids):
+        raise ValueError(f"模型返回的工具调用 ID 缺失或重复：{call_ids!r}")
+    messages: list[ChatMessage] = [reply]
+    if step_count >= max_steps:
+        # Close unexecuted tool calls so the next turn has valid chat history.
+        for call in reply.tool_calls:
+            assert call["id"] is not None
+            messages.append(
+                ToolMessage(
+                    content=STEP_LIMIT_MESSAGE,
+                    name=call["name"],
+                    tool_call_id=call["id"],
+                    status="error",
+                )
+            )
+        messages.extend(_invalid_tool_results(reply))
+    return messages
+
+
+async def execute_tools(
+    tool_node: ToolNode, state: ToolState, config: RunnableConfig
+) -> ToolUpdates:
+    messages = state["messages"]
+    reply = messages[-1]
+    assert isinstance(reply, AIMessage)
+    errors = _invalid_tool_results(reply)
+    if RUN_PYTHON not in tool_node.tools_by_name or not any(
+        call["name"] == RUN_PYTHON for call in reply.tool_calls
+    ):
+        return _append_tool_results(await tool_node.ainvoke(state, config), errors)
+
+    failures = _sandbox_failures_in_turn(messages)
+    sandbox_call = None
+    other_calls = []
+    for call in reply.tool_calls:
+        if call["name"] != RUN_PYTHON:
+            other_calls.append(call)
+            continue
+        if failures > MAX_REPAIR_ROUNDS:
+            reason = REPAIR_LIMIT_MESSAGE
+        elif sandbox_call is not None:
+            reason = PARALLEL_SANDBOX_MESSAGE
+        else:
+            sandbox_call = call
+            continue
+        assert call["id"] is not None
+        errors.append(
+            ToolMessage(
+                name=RUN_PYTHON,
+                tool_call_id=call["id"],
+                status="error",
+                content=reason,
+            )
+        )
+
+    def select_calls(calls: list[ToolCall]) -> ToolState:
+        selected = reply.model_copy(update={"tool_calls": calls})
+        return {**state, "messages": [*messages[:-1], selected]}
+
+    updates = {"messages": []}
+    if other_calls:
+        updates = await tool_node.ainvoke(select_calls(other_calls), config)
+    if sandbox_call is not None:
+        # Finish parallel MCP work before starting a sandbox worker.
+        assert reply.id is not None
+        sandbox_updates = await tool_node.ainvoke(
+            select_calls([sandbox_call]),
+            sandbox_config(
+                config, reply.id, final_repair=failures == MAX_REPAIR_ROUNDS
+            ),
+        )
+        updates = _append_tool_results(updates, sandbox_updates["messages"])
+    return _append_tool_results(updates, errors)
+
+
+def single_system_prompt(settings: GraphSettings) -> str:
+    if settings.trim_tool_fields or settings.summarize_history:
+        return f"{SYSTEM_PROMPT.text}\n\n{DATA_INSTRUCTIONS}"
+    return SYSTEM_PROMPT.text
 
 
 def build_graph(
-    model: BaseChatModel, tools: list[BaseTool], checkpointer: BaseCheckpointSaver
+    model: BaseChatModel,
+    tools: list[BaseTool],
+    checkpointer: BaseCheckpointSaver,
+    *,
+    settings: GraphSettings = DEFAULT_GRAPH_SETTINGS,
+    summary_model: BaseChatModel | None = None,
 ) -> CompiledStateGraph:
+    if settings.summarize_history:
+        assert summary_model is not None
+    else:
+        summary_model = None
+    if settings.mode == "multi":
+        from .multi import build_multi_graph
+
+        return build_multi_graph(model, tools, checkpointer, settings, summary_model)
+
     model_with_tools = model.bind_tools(tools)
     tool_node = ToolNode(tools)
+    tool_schemas = [convert_to_openai_tool(tool) for tool in tools]
+    prompt = single_system_prompt(settings)
+
+    def render(
+        messages: list[ChatMessage], summary: HistorySummary | None
+    ) -> list[BaseMessage]:
+        if not (settings.trim_tool_fields or settings.summarize_history):
+            return [SYSTEM_PROMPT, *messages]
+        index = max(
+            i for i, message in enumerate(messages) if isinstance(message, HumanMessage)
+        )
+        question = messages[index]
+        assert isinstance(question, HumanMessage)
+        return render_prompt(
+            prompt,
+            {"summary": summary, "messages": messages[:index]},
+            question,
+            messages[index + 1 :],
+            trim=settings.trim_tool_fields,
+        )
 
     async def call_agent(
         state: AgentState, config: RunnableConfig
-    ) -> dict[str, list[AnyMessage] | int]:
-        reply = await model_with_tools.ainvoke(
-            [SYSTEM_PROMPT, *state["messages"]], config
+    ) -> dict[str, list[ChatMessage] | int | HistorySummary | None]:
+        prepared = await prepare_input(
+            state["messages"],
+            state.get("summary"),
+            render,
+            config=config,
+            role="agent",
+            tool_schemas=tool_schemas,
+            summary_model=summary_model,
+            trim=settings.trim_tool_fields,
         )
-        call_ids = [
-            call["id"] for call in (*reply.tool_calls, *reply.invalid_tool_calls)
-        ]
-        if None in call_ids or "" in call_ids or len(set(call_ids)) != len(call_ids):
-            raise ValueError(f"模型返回的工具调用 ID 缺失或重复：{call_ids!r}")
+        reply = await model_with_tools.ainvoke(prepared.messages, prepared.config)
         step_count = state["step_count"] + 1
-        messages: list[AnyMessage] = [reply]
-        if step_count >= state["max_steps"]:
-            # Close unexecuted tool calls so the next turn has valid chat history.
-            for call in reply.tool_calls:
-                assert call["id"] is not None
-                messages.append(
-                    ToolMessage(
-                        content=STEP_LIMIT_MESSAGE,
-                        name=call["name"],
-                        tool_call_id=call["id"],
-                        status="error",
-                    )
-                )
-            messages.extend(_invalid_tool_results(reply))
-        return {"messages": messages, "step_count": step_count}
+        return {
+            "messages": react_reply(reply, step_count, state["max_steps"]),
+            "step_count": step_count,
+            "summary": prepared.summary,
+        }
 
     async def call_tools(state: AgentState, config: RunnableConfig) -> ToolUpdates:
-        reply = state["messages"][-1]
-        assert isinstance(reply, AIMessage)
-        errors = _invalid_tool_results(reply)
-        if RUN_PYTHON not in tool_node.tools_by_name or not any(
-            call["name"] == RUN_PYTHON for call in reply.tool_calls
-        ):
-            return _append_tool_results(await tool_node.ainvoke(state, config), errors)
-
-        failures = _sandbox_failures_in_turn(state["messages"])
-        sandbox_call = None
-        other_calls = []
-        for call in reply.tool_calls:
-            if call["name"] != RUN_PYTHON:
-                other_calls.append(call)
-                continue
-            if failures > MAX_REPAIR_ROUNDS:
-                reason = REPAIR_LIMIT_MESSAGE
-            elif sandbox_call is not None:
-                reason = PARALLEL_SANDBOX_MESSAGE
-            else:
-                sandbox_call = call
-                continue
-            assert call["id"] is not None
-            errors.append(
-                ToolMessage(
-                    name=RUN_PYTHON,
-                    tool_call_id=call["id"],
-                    status="error",
-                    content=reason,
-                )
-            )
-
-        def select_calls(calls: list[ToolCall]) -> AgentState:
-            selected = reply.model_copy(update={"tool_calls": calls})
-            return {**state, "messages": [*state["messages"][:-1], selected]}
-
-        updates = {"messages": []}
-        if other_calls:
-            updates = await tool_node.ainvoke(select_calls(other_calls), config)
-        if sandbox_call is not None:
-            # A parallel MCP exception must not leave a sandbox worker running
-            # after this graph node and its request-scoped lock exit.
-            assert reply.id is not None
-            sandbox_updates = await tool_node.ainvoke(
-                select_calls([sandbox_call]),
-                sandbox_config(
-                    config, reply.id, final_repair=failures == MAX_REPAIR_ROUNDS
-                ),
-            )
-            updates = _append_tool_results(updates, sandbox_updates["messages"])
-        return _append_tool_results(updates, errors)
+        return await execute_tools(tool_node, state, config)
 
     graph = StateGraph(AgentState)
     graph.add_node("agent", call_agent)

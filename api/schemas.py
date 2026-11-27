@@ -78,6 +78,9 @@ class ThreadState(ThreadCreated):
     next_nodes: tuple[str, ...]
     step_count: int
     messages: list[HumanHistory | AIHistory | ToolHistory]
+    incomplete_turn: bool | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class UploadedDataset(BaseModel):
@@ -96,27 +99,31 @@ class SSEPayload(BaseModel):
         )
 
 
-class Node(SSEPayload):
+class BranchEvent(SSEPayload):
+    subtask_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class Node(BranchEvent):
     event = "node"
     node: str
     recovering: bool = False
 
 
-class ToolCallEvent(SSEPayload):
+class ToolCallEvent(BranchEvent):
     event = "tool_call"
     tool_name: str
     tool_call_id: str
     args: dict
 
 
-class InvalidToolCallEvent(SSEPayload):
+class InvalidToolCallEvent(BranchEvent):
     event = "tool_call"
     tool_name: str | None
     tool_call_id: str
     raw_args: str | None
 
 
-class ToolResult(SSEPayload):
+class ToolResult(BranchEvent):
     event = "tool_result"
     tool_name: str | None
     tool_call_id: str

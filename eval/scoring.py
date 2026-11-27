@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 from pydantic import JsonValue, ValidationError
 
 from agent.graph import STEP_LIMIT_MESSAGE
+from agent.state import MultiState, ordered_results
 from sandbox.models import MAX_REPAIR_ROUNDS, RUN_PYTHON
 from sandbox.tool import is_repairable_failure
 
@@ -73,6 +74,17 @@ def observed_calls(messages: list[AnyMessage]) -> list[ObservedCall]:
         elif isinstance(message, ToolMessage):
             pending[message.tool_call_id].result = message
     return calls
+
+
+def multi_score_messages(state: MultiState) -> list[AnyMessage]:
+    messages: list[AnyMessage] = []
+    if "turn_id" in state:
+        for result in ordered_results(state):
+            messages.extend(result.messages[1:])
+    # On a partial run the last root message is the question. It prevents a
+    # worker's concluding message from being scored as the user-facing answer.
+    messages.extend(state["messages"][-1:])
+    return messages
 
 
 def parameter_error(

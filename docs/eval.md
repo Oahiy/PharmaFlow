@@ -480,6 +480,75 @@ uv run --offline --locked --no-sync --no-env-file python -m eval.compare \
   25fb9fa3-6ac1-4039-aeb5-3dc864641969 39aa38a3-a334-42bb-b2cf-4bc22538e1a0
 ```
 
+## Task 8 多智能体与上下文压缩
+
+`AGENT_GRAPH_MODE` 在 CLI、API 和评测中选择 `single` 或 `multi`，默认 `single`。两个图的 `AGENT_TRIM_TOOL_FIELDS` 和 `AGENT_SUMMARIZE_HISTORY` 都默认关闭。字段裁剪只影响 Agent 送入模型的副本，例如省略请求回显、扩展检索式和重排分数。`AGENT_STRUCTURED_WORKER_RESULTS` 默认开启，仅影响多图。关闭时 Reporter 同时接收分支结论和完整消息记录，记录作为转义后的 JSON 数据块传入。
+
+Task 12 对比字段裁剪时使用多智能体模式，固定其他开关，只切换 `AGENT_TRIM_TOOL_FIELDS`。多图在两个状态下都使用数据块。单 Agent 启用裁剪也会改变系统提示词和历史消息的呈现方式。数据块将内容中的 `</` 写成 JSON 中合法的 `<\/`，说明书 HTML 的起始标签保持可读。
+
+Planner 每轮至多生成一次共享的历史摘要。各 worker 与 Reporter 使用同一份摘要和保留的历史，worker 各自压缩本轮的 ReAct 记录。以一条消息及其全部工具结果为一个保留单位。每个 worker 的输入依次为系统提示词、摘要块、历史数据块、本轮原始用户消息和本轮保留单位。Critic 重派时在末尾添加一条临时用户消息，写明反馈，不写入分支记录。
+
+原始用户文本即使早于摘要的位置也照样送入模型。摘要末尾由代码附上 PMID、NCT、说明书、片段和数据集 ID，包括 `candidates` 和 `upload_` 开头的 ID。多图跨轮传递对话历史，历史答复中已经给出的 `export_properties` 派生 ID 可以复用。只出现在工具结果里的 ID 随当轮分支记录归档。
+
+开启摘要时填写 `LLM_CHEAP_MODEL`，沿用主模型的端点和密钥。两个模型都通过同一个客户端配置创建，DeepSeek 关闭 thinking。下例使用 `.env.example` 中的模型名，若配置了其他便宜模型，将命令中的值改为实际模型。
+
+```sh
+LLM_MODEL=deepseek-flash uv run --offline --locked --no-sync --no-env-file python -m scripts.check_model
+```
+
+### Token 预算与估算误差
+
+预算为代码常量 **6,144**，保留最近 **2** 个可压缩单位，完整保留原始用户消息。估算对序列化后的模型输入计算，包含系统提示词、消息封装和实际绑定的工具定义。每个非 ASCII 字符计 1 token，每个 ASCII 字符计 0.3 token，使用固定系数。固定输入与保留单位仍超预算时照常调用，模型 trace 中的 `context_budget_exceeded` 标记该次调用，旁边记录估算值和预算。
+
+从 Task 7 两轮开发期的 24 个本地 Postgres 检查点逐次重建模型输入，使用当时的单 Agent 系统提示词和完整工具定义。重建的工具定义摘要与两轮入库值相同，52 次调用的实际用量是检查点里各 `AIMessage.usage_metadata.input_tokens`。误差是估算值减实际值。
+
+| 样本 | 实际中位数 | 实际 P95 | 实际最大值 | 平均误差 | 平均绝对误差 | 平均绝对百分比误差 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 52 次 Agent 调用 | 2,908 | 5,331 | 7,576 | +234.81 | 320.19 | 8.28% |
+
+误差范围为 −1,110 至 +908 token，绝对误差 P95 为 906.9 token。以 6,144 为界，估算超预算 4 次，实际超预算 2 次。两次 S02 的实际值为 7,576、估算值为 6,466，两次 M02 的估算值超预算而实际值低于预算。预算来自携带全部工具定义的单 Agent 调用。多图 worker 只绑定子集，12 条基础用例又是单轮，即使开启摘要也可能没有一次实际压缩。Task 12 测量摘要效果时需加入能触发摘要、且有完整旧单位可压缩的用例。
+
+### 同提交的两组基础评测
+
+在收录 Task 8 改动的同一个提交上完成四轮评测。沿用相同的模型、回放、证据索引和 Langfuse 配置。关闭字段裁剪和历史摘要，保留多图默认的结构化回传。关闭结构化回传的实验留到 Task 12。先跑两轮单 Agent，每轮保存 `run_id`。默认目录有 12 条基础用例，多图暂不支持独立的自愈用例目录。
+
+```sh
+git rev-parse HEAD
+export AGENT_TRIM_TOOL_FIELDS=false
+export AGENT_STRUCTURED_WORKER_RESULTS=true
+export AGENT_SUMMARIZE_HISTORY=false
+AGENT_GRAPH_MODE=single uv run --offline --locked --no-sync --no-env-file python -m eval.run --tag task8-single-1 &&
+  AGENT_GRAPH_MODE=single uv run --offline --locked --no-sync --no-env-file python -m eval.run --tag task8-single-2
+```
+
+把刚输出的两轮 ID 分别赋给 `TASK8_SINGLE_1` 和 `TASK8_SINGLE_2`。先核对两轮的「系统提示词摘要」和「工具定义摘要」均与 Task 7 `39aa38a3` 显示一致。它和 `ebeade95` 都是有未提交改动时的开发运行，仅用于这项核对。正式对比用本节新跑的单 Agent 两轮。Task 6 的 `25fb9fa3` 早于 `search_evidence`，两项摘要与 Task 7/8 的对应值有差异。
+
+```sh
+uv run --offline --locked --no-sync --no-env-file python -m eval.compare \
+  39aa38a3-a334-42bb-b2cf-4bc22538e1a0 "$TASK8_SINGLE_1" &&
+  uv run --offline --locked --no-sync --no-env-file python -m eval.compare \
+    39aa38a3-a334-42bb-b2cf-4bc22538e1a0 "$TASK8_SINGLE_2"
+```
+
+在同一提交上沿用上述三个开关值，再跑多图两轮。把新输出的 ID 分别赋给 `TASK8_MULTI_1` 和 `TASK8_MULTI_2`。
+
+```sh
+git rev-parse HEAD
+AGENT_GRAPH_MODE=multi uv run --offline --locked --no-sync --no-env-file python -m eval.run --tag task8-multi-1 &&
+  AGENT_GRAPH_MODE=multi uv run --offline --locked --no-sync --no-env-file python -m eval.run --tag task8-multi-2
+```
+
+记录四轮汇总的「任务成功」和「平均输入 token」，再查看两组逐例差异。用量包含 Planner、worker、Reporter 和启用时的摘要调用。Judge 单独计费。多图按 Planner 的子任务顺序拼接各分支原始记录，最后接 Reporter 答复。
+
+```sh
+uv run --offline --locked --no-sync --no-env-file python -m eval.compare "$TASK8_SINGLE_1" "$TASK8_MULTI_1" &&
+  uv run --offline --locked --no-sync --no-env-file python -m eval.compare "$TASK8_SINGLE_2" "$TASK8_MULTI_2"
+```
+
+运行配置记录图模式、各节点模型、三个压缩开关、预算和保留单位数、各节点系统提示词 SHA-256，以及各 worker 可用工具定义的 SHA-256。单 Agent 的 `system_prompt_sha256` 取实际系统提示词模板。关闭字段裁剪和历史摘要时，取值与基线一致。Critic 的模型为 `null`。`eval.compare` 汇报各项是否一致。旧运行缺失的字段会显示「缺少记录」。用 Langfuse 查看实际的并行时间区间见 README 的混合文献与分子问题。 [并行演示](../README.md#演示文献和分子并行分析)
+
+Reporter 把未核验的编号追加到答复末尾，评测同时保存到 `error_detail.reporter_unverified_ids`。代码识别 `NCT` 加 8 位数字、带 `PMID` 前缀的数字、片段 `citation_id` 和 UUID 格式的说明书 `set_id`。用户原文已有的编号不计入未核验项。E02 规定答复中不得出现有效格式的 NCT 示例，正文或末尾追加说明出现编造的 `NCT` 加 8 位数字时，此例按现有规则失败。
+
 ## 打开 Langfuse trace
 
 正式评测首先检查追踪已开启、两个 key 已填写，随后调用 `auth_check()`。退出时用同一个默认客户端 flush。API 默认也在启动时验证凭据，关闭 API 追踪可设置 `LANGFUSE_TRACING_ENABLED=false`。两者的 session 都对应 `thread_id`。

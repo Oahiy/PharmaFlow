@@ -19,12 +19,20 @@ MODEL_INPUT_DIGESTS = {
     "tool_schema_sha256": "工具定义",
     "corpus_sha256": "检索语料",
 }
+GRAPH_CONFIG_FIELDS = {
+    "graph_mode": "图模式",
+    "node_models": "节点模型",
+    "compression": "压缩配置",
+    "node_system_prompt_sha256": "各节点系统提示词摘要",
+    "worker_tool_schema_sha256": "各 worker 工具定义摘要",
+}
 
 
 @dataclass(frozen=True)
 class Comparison:
     rows: list[DictRow]
     model_input_matches: dict[str, bool | None]
+    graph_config_matches: dict[str, bool | None]
 
 
 async def read_comparison(
@@ -49,15 +57,22 @@ async def read_comparison(
         raise ValueError(
             f"运行 {first_id} 与 {second_id} 的摘要不一致（{', '.join(differences)}）。"
         )
-    model_input_matches: dict[str, bool | None] = {}
-    for field in MODEL_INPUT_DIGESTS:
-        before, after = first_config.get(field), second_config.get(field)
-        model_input_matches[field] = (
-            before == after if before is not None and after is not None else None
-        )
+
+    def compare_fields(fields: dict[str, str]) -> dict[str, bool | None]:
+        return {
+            field: first_config[field] == second_config[field]
+            if field in first_config and field in second_config
+            else None
+            for field in fields
+        }
+
     sql = Path(__file__).with_suffix(".sql").read_text(encoding="utf-8")
     rows = await (await conn.execute(sql, (first_id, second_id))).fetchall()
-    return Comparison(rows=rows, model_input_matches=model_input_matches)
+    return Comparison(
+        rows=rows,
+        model_input_matches=compare_fields(MODEL_INPUT_DIGESTS),
+        graph_config_matches=compare_fields(GRAPH_CONFIG_FIELDS),
+    )
 
 
 COLUMNS = {
@@ -94,6 +109,12 @@ async def compare(first_id: UUID, second_id: UUID) -> None:
         "，".join(
             f"{label}摘要 {statuses[comparison.model_input_matches[field]]}"
             for field, label in MODEL_INPUT_DIGESTS.items()
+        )
+    )
+    print(
+        "，".join(
+            f"{label} {statuses[comparison.graph_config_matches[field]]}"
+            for field, label in GRAPH_CONFIG_FIELDS.items()
         )
     )
     print_table(

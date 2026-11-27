@@ -37,6 +37,23 @@ uv run streamlit run ui/app.py
 
 核对答复里的片段 ID 和链接与工具返回一致。演示时附上 dense、混合召回和混合召回加重排的 Recall@8 和 MRR。 [检索评测](docs/eval.md#task-7-检索评测)
 
+## 演示文献和分子并行分析
+
+CLI、API 和评测默认使用 `AGENT_GRAPH_MODE=single`。启动 API 时设为 `multi`，在 Streamlit 新建会话。已有的 Postgres、Qdrant 证据索引和 Langfuse 配置继续使用。
+
+```sh
+AGENT_GRAPH_MODE=multi uv run --offline --locked --no-sync --no-env-file uvicorn api.main:app
+uv run --offline --locked --no-sync --no-env-file streamlit run ui/app.py
+```
+
+> 请用 `search_evidence` 查 sotorasib 的肝毒性证据，给出英文片段、片段 ID 和原文链接。同时计算 `CCO` 和 `CC(=O)O` 的分子量及 TPSA，按输入顺序单列结果。
+
+聊天的执行详情显示子任务 ID 和工具调用，答复由 Reporter 流式输出。在 Langfuse 按侧栏的会话 ID 过滤 session，打开该轮 trace，核对 `LitResearcher` 和 `MolAnalyst` 的执行时间有重叠，并在两个分支之后看到 `Critic` 和 `Reporter`。 [追踪设置和评测命令](docs/eval.md#task-8-多智能体与上下文压缩)
+
+多智能体父图的 `step_count` 是本轮已回传的 worker ReAct 模型调用数，包含 Critic 重派，不含 Planner、Reporter 和摘要。每次派发的 worker 各自使用请求的 `max_steps`。后续轮次可以复用历史答复中已给出的派生数据集 ID。仅存在于分支工具结果里的 ID 随该轮分支记录归档。
+
+刷新时，历史接口从各轮已完成的父图检查点恢复工具记录和图表，按 Planner 的子任务顺序展示，每轮用户消息只出现一次。上一轮待执行或中途出错时，仍可看到该轮原始问题和已回传的工具结果。恢复执行后 Reporter 才会补上答复。Streamlit 重跑会再次读取历史接口，服务端在有历史分支时会扫描该会话的父图检查点，读取成本随会话长度增加。
+
 ## 演示代码自愈与图表
 
 在 Streamlit 侧栏上传 `data/candidates.csv`，发送下面的演示消息。给定起始脚本里的大写 `QED` 列用于触发 `KeyError`，派生 CSV 提供的是小写 `qed`。

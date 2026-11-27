@@ -2,7 +2,7 @@
 
 from langchain_openai import ChatOpenAI
 
-from .config import LLMSettings
+from .config import AgentSettings, LLMSettings
 
 TEMPERATURE = 0
 
@@ -20,3 +20,8 @@ def create_llm(settings: LLMSettings) -> ChatOpenAI:
         if settings.thinking_disabled
         else None,
     )
+
+
+def create_summary_llm(settings: AgentSettings) -> ChatOpenAI | None:
+    summary = settings.summary_llm
+    return None if summary is None else create_llm(summary)

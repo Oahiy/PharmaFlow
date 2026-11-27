@@ -13,6 +13,8 @@ from mcp_servers.chem.datasets import upload_directory
 
 from .config import PROJECT_ROOT
 
+MCP_SERVER = "mcp_server"
+
 
 def lit_env_from_process() -> dict[str, str]:
     return {
@@ -61,4 +63,8 @@ async def open_mcp_tools(
     ):
         chem_tools = await load_mcp_tools(chem_session)
         lit_tools = await load_mcp_tools(lit_session)
+        for server, tools in (("chem", chem_tools), ("lit", lit_tools)):
+            for tool in tools:
+                metadata = {} if tool.metadata is None else tool.metadata
+                tool.metadata = {**metadata, MCP_SERVER: server}
         yield [*chem_tools, *lit_tools]

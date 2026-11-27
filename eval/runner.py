@@ -33,10 +33,10 @@ from requests.exceptions import ConnectionError as DockerConnectionError
 from requests.exceptions import ReadTimeout
 
 from agent.config import AgentSettings, git_commit
-from agent.graph import SYSTEM_PROMPT, build_graph
+from agent.graph import build_graph, is_multi_graph, turn_recursion_limit
 from agent.mcp_client import open_mcp_tools
 from agent.persistence import open_connection_pool, setup_checkpointer
-from agent.state import AgentState
+from agent.state import MultiState, TurnInput
 from agent.tracing import LANGFUSE_KEYS, CallbackFactory, trace_config
 from mcp_servers.chem.models import ExportPropertiesResult
 from mcp_servers.lit.config import DEFAULT_RECORDINGS_DIR, LitSettings
@@ -48,7 +48,7 @@ from .cases import CASE_DIRECTORY, EvalCase, load_cases
 from .judge import Judge, JudgeParseError
 from .provenance import run_config
 from .results import CaseResult
-from .scoring import ExceptionDetail, score_case
+from .scoring import ExceptionDetail, multi_score_messages, score_case
 from .storage import finish_run, read_summary, save_result, setup_schema, start_run
 from .usage import AgentUsage
 
@@ -218,7 +218,9 @@ async def execute_case(
             )
         messages.extend([seed, failure])
     scored_from = len(messages)
-    turn: AgentState = {"messages": messages, "step_count": 0, "max_steps": MAX_STEPS}
+    turn: TurnInput = {"messages": messages, "step_count": 0, "max_steps": MAX_STEPS}
+    multi_state: MultiState | None = None
+    multi = is_multi_graph(graph)
     agent_exception = None
     start = perf_counter_ns()
     try:
@@ -226,7 +228,10 @@ async def execute_case(
             graph.astream(turn, config, stream_mode="values")
         ) as stream:
             async for state in stream:
-                messages = state["messages"]
+                if multi:
+                    multi_state = state
+                else:
+                    messages = state["messages"]
     except Exception as exc:
         if infrastructure_error(exc):
             raise
@@ -235,9 +240,14 @@ async def execute_case(
 
     assessment = score_case(
         case,
-        messages[scored_from:],
+        messages[scored_from:]
+        if multi_state is None
+        else multi_score_messages(multi_state),
         describe_exception(agent_exception) if agent_exception is not None else None,
     )
+    detail = {} if assessment.error_detail is None else assessment.error_detail.copy()
+    if multi_state is not None and multi_state.get("reporter_unverified_ids"):
+        detail["reporter_unverified_ids"] = multi_state["reporter_unverified_ids"]
     result = CaseResult(
         case_id=case.id,
         thread_id=thread_id,
@@ -247,7 +257,7 @@ async def execute_case(
         tools_correct=assessment.tools_correct,
         params_valid=assessment.params_valid,
         failure_type=assessment.failure_type,
-        error_detail=assessment.error_detail,
+        error_detail=detail if detail else None,
         repair_attempts=assessment.repair_attempts,
     )
     if case.judge is None or not result.success:
@@ -260,7 +270,7 @@ async def execute_case(
         return replace(
             result,
             failure_type="judge_parse_error",
-            error_detail={"exception": dict(describe_exception(exc))},
+            error_detail={**detail, "exception": dict(describe_exception(exc))},
         )
     except Exception as exc:
         if infrastructure_error(exc):
@@ -268,7 +278,7 @@ async def execute_case(
         return replace(
             result,
             failure_type="judge_call_error",
-            error_detail={"exception": dict(describe_exception(exc))},
+            error_detail={**detail, "exception": dict(describe_exception(exc))},
         )
     score = verdict.score
     if score < case.judge.threshold:
@@ -276,7 +286,7 @@ async def execute_case(
             result,
             judge_score=score,
             failure_type="judge_below_threshold",
-            error_detail={"judge": verdict.model_dump(mode="json")},
+            error_detail={**detail, "judge": verdict.model_dump(mode="json")},
         )
     return replace(result, judge_score=score)
 
@@ -286,12 +296,17 @@ async def run_suite(
     *,
     tag: str,
     model: BaseChatModel,
+    summary_model: BaseChatModel | None = None,
     judge: Judge,
     callback_factory: CallbackFactory,
     case_directory: Path = CASE_DIRECTORY,
     recordings_dir: Path = DEFAULT_RECORDINGS_DIR,
 ) -> tuple[UUID, list[DictRow]]:
     suite = load_cases(case_directory)
+    if settings.graph.mode == "multi" and any(
+        case.category == "self_healing" for case in suite.cases
+    ):
+        raise ValueError("多智能体模式暂不支持自愈评测用例。")
     lit = LitSettings(mode="replay", recordings_dir=recordings_dir.resolve())
     rag = RagSettings.from_env()
     lit_env = {
@@ -313,16 +328,21 @@ async def run_suite(
         async with open_mcp_tools(lit_env=lit_env) as tools:
             agent_tools = [*tools, create_run_python_tool()]
             config = run_config(
-                model=settings.llm,
+                settings=settings,
                 suite=suite,
                 lit=lit,
                 max_steps=MAX_STEPS,
                 commit=commit,
-                system_prompt=SYSTEM_PROMPT.text,
                 tools=agent_tools,
             )
             tools_by_name = {tool.name: tool for tool in agent_tools}
-            graph = build_graph(model, agent_tools, checkpointer)
+            graph = build_graph(
+                model,
+                agent_tools,
+                checkpointer,
+                settings=settings.graph,
+                summary_model=summary_model,
+            )
             async with pool.connection() as conn:
                 await start_run(
                     conn,
@@ -352,7 +372,7 @@ async def run_suite(
                     "thread_id": str(thread_id),
                     "user_id": str(user_id),
                 }
-                invocation["recursion_limit"] = 2 * MAX_STEPS + 1
+                invocation["recursion_limit"] = turn_recursion_limit(graph, MAX_STEPS)
                 try:
                     result = await execute_case(
                         case,

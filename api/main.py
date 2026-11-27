@@ -1,4 +1,4 @@
-"""FastAPI entry point for the persistent single-agent chat."""
+"""FastAPI entry point for persistent PharmaFlow chat."""
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Strict checkpoint deserialization is configured at LangGraph import time.
     load_environment()
     from agent.graph import build_graph
-    from agent.llm import create_llm
+    from agent.llm import create_llm, create_summary_llm
     from agent.mcp_client import lit_env_from_process, open_mcp_tools
     from agent.persistence import open_connection_pool, setup_checkpointer
     from agent.tracing import langfuse_turn_trace, open_langfuse
@@ -60,6 +60,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     create_llm(settings.llm),
                     [*tools, create_run_python_tool()],
                     checkpointer,
+                    settings=settings.graph,
+                    summary_model=create_summary_llm(settings),
                 )
                 yield
 
@@ -129,20 +131,30 @@ async def run_thread(
 
 @router.get("/threads/{thread_id}")
 async def get_thread(thread_id: UUID, graph: GraphDependency) -> ThreadState:
-    snapshot = await graph.aget_state({"configurable": {"thread_id": str(thread_id)}})
+    from agent.graph import is_multi_graph
+
+    from .history import multi_history
+
+    config = {"configurable": {"thread_id": str(thread_id)}}
+    snapshot = await graph.aget_state(config)
     if snapshot.created_at is None:
         return ThreadState(
             thread_id=thread_id, exists=False, next_nodes=(), step_count=0, messages=[]
         )
+    if is_multi_graph(graph):
+        messages, incomplete, step_count = await multi_history(graph, config, snapshot)
+    else:
+        messages = snapshot.values["messages"]
+        incomplete = None
+        # The initial input checkpoint precedes the first write to step_count.
+        step_count = 0 if snapshot.next == (START,) else snapshot.values["step_count"]
     return ThreadState(
         thread_id=thread_id,
         exists=True,
         next_nodes=snapshot.next,
-        # The initial input checkpoint precedes the first write to step_count.
-        step_count=0 if snapshot.next == (START,) else snapshot.values["step_count"],
-        messages=[
-            serialize_message(message) for message in snapshot.values["messages"]
-        ],
+        step_count=step_count,
+        messages=[serialize_message(message) for message in messages],
+        incomplete_turn=incomplete,
     )
 
 

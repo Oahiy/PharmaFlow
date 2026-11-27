@@ -134,15 +134,16 @@ def show_run(client: httpx.Client, message: str) -> str | None:
                     source.response.raise_for_status()
                 for event in source.iter_sse():
                     data = event.json()
+                    subtask = f" · {data['subtask_id']}" if "subtask_id" in data else ""
                     match event.event:
                         case "node":
                             phase = (
                                 "恢复上一轮" if data.get("recovering") else "正在执行"
                             )
-                            status.update(label=f"{phase} · {data['node']}")
-                            status.write(f"{phase} · {data['node']}")
+                            status.update(label=f"{phase} · {data['node']}{subtask}")
+                            status.write(f"{phase} · {data['node']}{subtask}")
                         case "tool_call":
-                            status.write(f"调用工具 · {data['tool_name']}")
+                            status.write(f"调用工具 · {data['tool_name']}{subtask}")
                             if "raw_args" in data:
                                 status.text(f"无法解析的原始参数：{data['raw_args']!r}")
                             elif data["tool_name"] == RUN_PYTHON:
@@ -151,7 +152,9 @@ def show_run(client: httpx.Client, message: str) -> str | None:
                                 status.json(data["args"])
                         case "tool_result":
                             output = data["output"]
-                            status.write(f"{data['tool_name']} · {data['status']}")
+                            status.write(
+                                f"{data['tool_name']} · {data['status']}{subtask}"
+                            )
                             if data["tool_name"] == RUN_PYTHON:
                                 show_python_result(
                                     client, status, charts, output, data.get("files")
@@ -232,9 +235,12 @@ def main() -> None:
             st.sidebar.error(error_detail(exc))
             st.stop()
         pending = bool(thread["next_nodes"])
-        render_history(client, thread["messages"], pending)
+        incomplete = thread.get("incomplete_turn", False)
+        render_history(client, thread["messages"], pending or incomplete)
         if pending:
             st.info("上一轮尚未结束，待执行节点：" + "、".join(thread["next_nodes"]))
+        elif incomplete:
+            st.info("上一轮未生成答复。")
         if message := st.chat_input("输入问题"):
             st.chat_message("user").markdown(message)
             with st.chat_message("assistant"):
