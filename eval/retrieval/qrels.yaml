@@ -16,7 +16,7 @@ R02:
 R03:
   - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:warnings_and_cautions:5.1
     source: pool
-    reason: 5.1 按距离末次免疫治疗 ≤3 个月、>3 个月及从未接受免疫治疗报告全等级肝毒性发生率，覆盖间隔相关性。
+    reason: 5.1 在 NSCLC 单药汇总人群中按距末次免疫治疗 ≤3 个月、>3 个月及从未接受免疫治疗报告全等级肝毒性发生率。
 
 R04:
   # 说明书 6.1 的永久停药数字使用说明书不良反应口径，论文给出题目指定的治疗相关不良事件口径。
@@ -28,21 +28,11 @@ R05:
   - unit_id: pubmed:37870968
     source: pool
     reason: CodeBreaK 300 主论文将皮肤毒性和低镁血症列为 sotorasib 联合帕尼单抗最常见的事件。
-  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:adverse_reactions:6.1
-    source: pool
-    reason: 6.1 的 CodeBreaK 300 段落指出皮疹常见，并列出以低镁为代表的 3 或 4 级实验室异常。
-  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:adverse_reactions_table:table-3
-    source: pool
-    reason: 说明书表 5 给出 CodeBreaK 300 联合治疗组皮疹和其他皮肤不良反应的分级发生率。
-  - unit_id: label:c80a362c-7ac3-4894-a076-0691e68ef8c1:adverse_reactions_table:table-4
-    source: pool
-    reason: 说明书表 6 按等级报告 CodeBreaK 300 联合治疗组的血镁下降发生率。
 
 R06:
-  # 单药剂量比较摘要使用 TEAE 口径，CodeBreaK 300 的联合用药比较覆盖本题的 ≥3 级部分。
-  - unit_id: pubmed:37870968
+  - unit_id: pubmed:39029295
     source: pool
-    reason: CodeBreaK 300 在两组均联合帕尼单抗的条件下，报告了 960 mg 和 240 mg 剂量组的 ≥3 级治疗相关不良事件比例。
+    reason: 晚期 NSCLC 单药剂量比较的摘要按 960 mg 和 240 mg 两组报告常见治疗期间不良事件发生率，包括腹泻、恶心及 ALT、AST 升高。
 
 R07:
   - unit_id: trial:NCT04303780:serious:investigations

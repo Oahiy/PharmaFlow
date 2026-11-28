@@ -8,20 +8,20 @@
   query_en: KRYSTAL-12 randomized paper, adagrasib and docetaxel, fatal adverse events attributed to treatment
 - id: R03
   category: label
-  question_zh: NSCLC 患者末次免疫治疗到开始 sotorasib 的间隔，与严重肝毒性风险有什么关系？
-  query_en: sotorasib, time gap since last checkpoint inhibitor dose, severe hepatotoxicity risk in NSCLC
+  question_zh: sotorasib 说明书如何按既往免疫治疗情况和间隔，报告 NSCLC 单药患者的全等级肝毒性发生率？
+  query_en: sotorasib label, prior immunotherapy timing and any-grade liver toxicity rates in NSCLC monotherapy
 - id: R04
   category: pubmed
   question_zh: KRYSTAL-1 的晚期 NSCLC 单药研究中，有多少患者因治疗相关不良事件停用 adagrasib？
   query_en: Treatment-related toxicity leading to drug discontinuation, adagrasib KRYSTAL-1 lung cancer monotherapy
 - id: R05
   category: pubmed
-  question_zh: CodeBreaK 300 的论文如何描述 sotorasib 联合帕尼单抗的皮肤毒性和低镁血症？
-  query_en: CodeBreaK 300 colorectal cancer sotorasib panitumumab, skin toxicity and hypomagnesemia in combination arms
+  question_zh: CodeBreaK 300 主论文如何描述 sotorasib 联合帕尼单抗的皮肤毒性和低镁血症？
+  query_en: CodeBreaK 300 primary paper, sotorasib panitumumab, skin toxicity and hypomagnesemia in combination arms
 - id: R06
   category: pubmed
-  question_zh: sotorasib 每日 960 mg 和 240 mg 两种剂量相比，治疗相关不良事件（包括 3 级及以上）的发生率有什么差别？
-  query_en: sotorasib 240 mg/day compared with 960 mg/day, any-grade and grade ≥3 rates for adverse events attributed to treatment
+  question_zh: 晚期 NSCLC 的 sotorasib 单药剂量比较研究中，每日 960 mg 和 240 mg 两组各有哪些常见治疗期间不良事件，发生率分别是多少？
+  query_en: sotorasib monotherapy for advanced NSCLC, common treatment-emergent adverse events, 960 mg vs 240 mg daily
 - id: R07
   category: trial
   question_zh: CodeBreaK 200 的严重不良事件表中，各治疗组的 ALT 升高人数与风险人数是多少？
